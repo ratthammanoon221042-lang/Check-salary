@@ -773,17 +773,9 @@ var AdminApp = (function () {
     }
 
     function zoomPage(n) {
-      var box = el('div', { class: 'viewer', style: 'max-height:80vh' }, Core.loading());
-      Core.modal({ title: 'หน้า ' + n, wide: true, body: box });
-      sp.pdf.getPage(n).then(function (page) {
-        var width = Math.max(320, box.clientWidth - 20);
-        var ratio = Math.min(window.devicePixelRatio || 1, 2);
-        var base = page.getViewport({ scale: 1 });
-        var vp = page.getViewport({ scale: (width / base.width) * ratio });
-        var c = el('canvas');
-        c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
-        return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise.then(function () { Core.clear(box).appendChild(c); });
-      });
+      var box = el('div', { class: 'viewer', style: 'max-height:75vh' });
+      Core.modal({ title: 'หน้า ' + n, wide: true, body: el('div', {}, box) });
+      Core.zoomableViewer(box, { pdf: sp.pdf, pages: [n] });
     }
 
     function uploadGroups(groups) {

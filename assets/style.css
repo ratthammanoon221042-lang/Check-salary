@@ -191,8 +191,12 @@
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; min-height: 240px;
     padding: 10px; overflow: auto; max-height: 75vh;
   }
-  .viewer canvas, .viewer img { display: block; width: 100%; height: auto; background: #fff; border-radius: 4px; }
+  .viewer-pages { margin: 0 auto; }
+  .viewer canvas, .viewer img { display: block; max-width: none; height: auto; background: #fff; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
   .viewer canvas + canvas { margin-top: 10px; }
+  .viewer-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  .viewer-bar .btn-sm { min-width: 38px; font-size: 16px; font-weight: 600; }
+  .zoom-label { min-width: 64px; text-align: center; font-size: 13px; font-weight: 600; color: var(--muted); }
   .viewer-empty { display: grid; place-items: center; min-height: 220px; color: var(--muted); text-align: center; }
 
   .callout { border-radius: 10px; padding: 12px 14px; font-size: 14px; }

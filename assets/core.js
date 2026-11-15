@@ -181,44 +181,119 @@ var Core = (function () {
     return bytes;
   }
 
-  /** แสดงไฟล์ PDF/รูปภาพในกล่อง viewer */
+  var PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  var ZOOMS = [1, 1.5, 2, 3, 4];
+
+  /**
+   * ตัวแสดงไฟล์ที่ซูมได้: สร้างแถบปุ่ม − / + / พอดีจอ ไว้เหนือกล่อง viewer
+   * src = { pdf: PDFDocumentProxy, pages: [เลขหน้า] } หรือ { img: dataUrl }
+   * PDF ถูกวาดใหม่จากต้นฉบับทุกครั้งที่ซูม จึงคมทุกระดับ
+   */
+  function zoomableViewer(container, src) {
+    clear(container);
+    if (container._bar && container._bar.parentNode) container._bar.parentNode.removeChild(container._bar);
+    var zoom = 1, gen = 0;
+    var label = el('span', { class: 'zoom-label' });
+    var minus = el('button', { class: 'btn btn-sm', type: 'button', text: '−', 'aria-label': 'ย่อ' });
+    var plus = el('button', { class: 'btn btn-sm', type: 'button', text: '+', 'aria-label': 'ขยาย' });
+    var fit = el('button', { class: 'btn btn-sm', type: 'button', text: 'พอดีจอ' });
+    var bar = el('div', { class: 'viewer-bar' }, minus, label, plus, fit,
+      el('span', { class: 'hint', style: 'margin-left:auto', text: 'กด + เพื่อขยายดูตัวเลข' }));
+    container.parentNode.insertBefore(bar, container);
+    container._bar = bar;
+    var holder = el('div', { class: 'viewer-pages' });
+    container.appendChild(holder);
+    var img = null, canvases = [];
+
+    function fitWidth() { return Math.max(260, container.clientWidth - 22); }
+    function update() {
+      label.textContent = zoom === 1 ? 'พอดีจอ' : Math.round(zoom * 100) + '%';
+      minus.disabled = zoom <= ZOOMS[0];
+      plus.disabled = zoom >= ZOOMS[ZOOMS.length - 1];
+      fit.disabled = zoom === 1;
+    }
+    function setZoom(z) {
+      // รักษาตำแหน่งที่กำลังดูไว้ระหว่างซูม
+      var rx = container.scrollWidth > container.clientWidth ? (container.scrollLeft + container.clientWidth / 2) / container.scrollWidth : 0.5;
+      var ry = container.scrollHeight > container.clientHeight ? (container.scrollTop + container.clientHeight / 2) / container.scrollHeight : 0;
+      zoom = z;
+      update();
+      var p = draw();
+      container.scrollLeft = rx * container.scrollWidth - container.clientWidth / 2;
+      container.scrollTop = ry * container.scrollHeight - (ry ? container.clientHeight / 2 : 0);
+      return p;
+    }
+    minus.addEventListener('click', function () { setZoom(ZOOMS[Math.max(0, ZOOMS.indexOf(zoom) - 1)]); });
+    plus.addEventListener('click', function () { setZoom(ZOOMS[Math.min(ZOOMS.length - 1, ZOOMS.indexOf(zoom) + 1)]); });
+    fit.addEventListener('click', function () { setZoom(1); });
+
+    function draw() {
+      var my = ++gen;
+      var cssW = Math.round(fitWidth() * zoom);
+      holder.style.width = cssW + 'px';
+      if (img) { img.style.width = cssW + 'px'; return Promise.resolve(); }
+      var dpr = window.devicePixelRatio || 1;
+      // ยืดภาพเดิมไปก่อนทันที (อาจเบลอชั่วครู่) แล้วค่อยแทนด้วยภาพคมชัด
+      canvases.forEach(function (c) { c.style.width = cssW + 'px'; c.style.height = Math.round(cssW * c._ratio) + 'px'; });
+      var chain = Promise.resolve();
+      src.pages.forEach(function (pageNo, idx) {
+        chain = chain.then(function () {
+          if (my !== gen) return;
+          return src.pdf.getPage(pageNo).then(function (page) {
+            if (my !== gen) return;
+            var base = page.getViewport({ scale: 1 });
+            // ความละเอียดตามจอจริง + เผื่ออีก 25% สำหรับการถ่างนิ้วซูม (จำกัดขนาดกันมือถือหน่วยความจำเต็ม)
+            var scale = (cssW * dpr * 1.25) / base.width;
+            scale = Math.min(scale, 4096 / base.width, Math.sqrt(12e6 / (base.width * base.height)));
+            var vp = page.getViewport({ scale: scale });
+            var c = el('canvas');
+            c.width = Math.floor(vp.width);
+            c.height = Math.floor(vp.height);
+            c._ratio = base.height / base.width;
+            c.style.width = cssW + 'px';
+            c.style.height = Math.round(cssW * c._ratio) + 'px';
+            return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise.then(function () {
+              if (my !== gen) return;
+              if (canvases[idx]) holder.replaceChild(c, canvases[idx]); else holder.appendChild(c);
+              if (canvases[idx]) { canvases[idx].width = 0; canvases[idx].height = 0; } // คืนหน่วยความจำ
+              canvases[idx] = c;
+            });
+          });
+        });
+      });
+      return chain;
+    }
+
+    update();
+    if (src.img) {
+      return new Promise(function (resolve, reject) {
+        img = el('img', { alt: '' });
+        img.onload = function () { resolve(); };
+        img.onerror = function () { reject(new Error('แสดงรูปภาพไม่ได้')); };
+        img.src = src.img;
+        holder.appendChild(img);
+        draw();
+      });
+    }
+    return draw();
+  }
+
+  /** แสดงไฟล์ PDF/รูปภาพในกล่อง viewer (ซูมได้) */
   function renderFile(container, data) {
     clear(container);
     if (/^image\//.test(data.mimeType)) {
-      return new Promise(function (resolve, reject) {
-        var img = el('img', { alt: data.fileName });
-        img.onload = function () { resolve(); };
-        img.onerror = function () { reject(new Error('แสดงรูปภาพไม่ได้')); };
-        img.src = 'data:' + data.mimeType + ';base64,' + data.base64;
-        container.appendChild(img);
-      });
+      return zoomableViewer(container, { img: 'data:' + data.mimeType + ';base64,' + data.base64 });
     }
     if (data.mimeType === 'application/pdf') {
       if (!window.pdfjsLib) {
         container.appendChild(el('div', { class: 'viewer-empty', text: 'โหลดตัวแสดง PDF ไม่สำเร็จ กรุณากดดาวน์โหลดไฟล์เพื่อเปิดดู' }));
         return Promise.resolve();
       }
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
       return pdfjsLib.getDocument({ data: b64ToBytes(data.base64) }).promise.then(function (pdf) {
-        var width = Math.max(320, container.clientWidth - 20);
-        var ratio = Math.min(window.devicePixelRatio || 1, 2);
-        var chain = Promise.resolve();
-        for (var n = 1; n <= pdf.numPages; n++) {
-          (function (pageNo) {
-            chain = chain.then(function () {
-              return pdf.getPage(pageNo).then(function (page) {
-                var base = page.getViewport({ scale: 1 });
-                var vp = page.getViewport({ scale: (width / base.width) * ratio });
-                var canvas = el('canvas');
-                canvas.width = Math.floor(vp.width);
-                canvas.height = Math.floor(vp.height);
-                container.appendChild(canvas);
-                return page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-              });
-            });
-          })(n);
-        }
-        return chain;
+        var pages = [];
+        for (var n = 1; n <= pdf.numPages; n++) pages.push(n);
+        return zoomableViewer(container, { pdf: pdf, pages: pages });
       });
     }
     container.appendChild(el('div', { class: 'viewer-empty', text: 'ไม่รองรับการแสดงไฟล์ชนิดนี้' }));
@@ -260,7 +335,7 @@ var Core = (function () {
     el: el, clear: clear, store: store, api: api, apiRaw: apiRaw, apiConfigured: apiConfigured, googleClientId: googleClientId, errMsg: errMsg, toast: toast,
     modal: modal, confirmDialog: confirmDialog, busy: busy, loading: loading,
     fmt: fmt, fmtShort: fmtShort, periodLabel: periodLabel, currentPeriod: currentPeriod, shiftPeriod: shiftPeriod,
-    badge: badge, renderFile: renderFile, downloadFile: downloadFile, thread: thread, topbar: topbar
+    badge: badge, renderFile: renderFile, zoomableViewer: zoomableViewer, downloadFile: downloadFile, thread: thread, topbar: topbar
   };
 })();
 
