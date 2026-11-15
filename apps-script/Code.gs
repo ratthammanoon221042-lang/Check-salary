@@ -67,8 +67,9 @@ const SCHEMA = {
     cols: [
       ['employeeId', 'รหัสพนักงาน', 'text'],
       ['name', 'ชื่อ-นามสกุล', 'text'],
-      ['email', 'อีเมล', 'text'],
-      ['createdAt', 'วันที่เพิ่ม', 'date']
+      ['email', 'บัญชี Google ที่ผูกไว้ (ระบบใส่ให้เอง)', 'text'],
+      ['createdAt', 'วันที่เพิ่ม', 'date'],
+      ['linkedAt', 'วันที่ผูกบัญชี', 'date']
     ]
   },
   TIMESHEETS: {
@@ -159,6 +160,11 @@ function getSheet_(schema) {
     initSheet_(sh, schema);
   } else if (sh.getLastRow() === 0) {
     initSheet_(sh, schema);
+  } else {
+    // อัปเดตหัวคอลัมน์ให้ตรงกับเวอร์ชันล่าสุด (เช่น มีคอลัมน์ใหม่เพิ่มท้ายตาราง)
+    const want = schema.cols.map(function (c) { return c[1]; });
+    const have = sh.getRange(1, 1, 1, want.length).getValues()[0];
+    if (have.join('|') !== want.join('|')) initSheet_(sh, schema);
   }
   SHEET_CACHE_[schema.name] = sh;
   return sh;
@@ -363,16 +369,11 @@ function adminEmail_() {
 
 function findEmployeeByEmail_(email) {
   email = normEmail_(email);
+  if (!email) return null; // พนักงานที่ยังไม่ผูกบัญชีมีอีเมลว่าง ห้ามจับคู่กับค่าว่าง
   const list = readAll_(SCHEMA.EMPLOYEES);
   for (let i = 0; i < list.length; i++) {
     if (normEmail_(list[i].email) === email) return list[i];
   }
-  return null;
-}
-
-function roleForEmail_(email) {
-  if (email && email === adminEmail_()) return 'admin';
-  if (findEmployeeByEmail_(email)) return 'employee';
   return null;
 }
 
@@ -406,42 +407,70 @@ function googleLogin(idToken) {
   if (String(info.email_verified) !== 'true') throw new Error('บัญชี Google นี้ยังไม่ได้ยืนยันอีเมล');
 
   const email = normEmail_(info.email);
-  const role = roleForEmail_(email);
-  if (!role) throw new Error('บัญชี ' + email + ' ไม่อยู่ในรายชื่อพนักงาน — ถ้ามีหลายบัญชี ให้เลือกบัญชีที่แจ้งไว้กับบริษัท หรือติดต่อผู้ดูแลระบบ');
-  if (role === 'admin') return createSession_(email, role, 'เข้าสู่ระบบ (บัญชี Google)');
+  if (email === adminEmail_()) return createSession_(email, 'admin', 'เข้าสู่ระบบ (บัญชี Google)');
 
   // พนักงาน: ต้องกรอกรหัสพนักงานอีกชั้น
+  // - บัญชีที่เคยผูกแล้ว: รหัสต้องตรงกับพนักงานที่ผูกไว้
+  // - บัญชีใหม่: ผูกกับรหัสที่กรอก (ถ้ารหัสนั้นยังไม่ถูกผูกกับบัญชีอื่น)
   const pending = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
   CacheService.getScriptCache().put('pend_' + pending, JSON.stringify({ email: email, a: 0, exp: Date.now() + EMPID_TTL_SEC * 1000 }), EMPID_TTL_SEC);
   const emp = findEmployeeByEmail_(email);
-  return { needEmployeeId: true, pending: pending, name: emp ? emp.name : '', email: email };
+  return { needEmployeeId: true, pending: pending, name: emp ? emp.name : '', email: email, firstTime: !emp };
 }
 
-/** หน้าเว็บเรียก: ขั้นที่ 2 ของพนักงาน — กรอกรหัสพนักงานให้ตรงกับบัญชี Google ที่ล็อกอิน */
+function maskEmail_(e) {
+  const m = String(e || '').match(/^(.)(.*)(@.*)$/);
+  return m ? m[1] + m[2].replace(/./g, '*').slice(0, 5) + m[3] : '';
+}
+
+/** หน้าเว็บเรียก: ขั้นที่ 2 ของพนักงาน — กรอกรหัสพนักงาน (ครั้งแรกจะผูกบัญชี Google กับรหัสนี้) */
 function verifyEmployeeId(pending, employeeId) {
   const cache = CacheService.getScriptCache();
   const key = 'pend_' + String(pending || '');
   const raw = cache.get(key);
   if (!raw) throw new Error('หมดเวลา กรุณากดลงชื่อเข้าใช้ด้วย Google ใหม่อีกครั้ง');
   const rec = JSON.parse(raw);
-  const emp = findEmployeeByEmail_(rec.email);
-  if (!emp) { cache.remove(key); throw new Error('ไม่พบบัญชีนี้ในรายชื่อพนักงาน'); }
-
   const input = String(employeeId || '').trim().toLowerCase();
   if (!input) throw new Error('กรุณากรอกรหัสพนักงาน');
-  if (input !== String(emp.employeeId).trim().toLowerCase()) {
-    rec.a += 1;
-    const left = EMPID_MAX_ATTEMPTS - rec.a;
-    audit_(rec.email, 'employee', 'กรอกรหัสพนักงานผิด', '', 'ครั้งที่ ' + rec.a);
-    if (left <= 0) {
-      cache.remove(key);
-      throw new Error('กรอกรหัสพนักงานผิดหลายครั้งเกินไป กรุณากดลงชื่อเข้าใช้ด้วย Google ใหม่');
+
+  function fail(msg, countIt) {
+    if (countIt) {
+      rec.a += 1;
+      audit_(rec.email, 'employee', 'กรอกรหัสพนักงานไม่ผ่าน', '', 'รหัส "' + input + '" ครั้งที่ ' + rec.a);
+      const left = EMPID_MAX_ATTEMPTS - rec.a;
+      if (left <= 0) {
+        cache.remove(key);
+        throw new Error('กรอกรหัสพนักงานผิดหลายครั้งเกินไป กรุณากดลงชื่อเข้าใช้ด้วย Google ใหม่');
+      }
+      cache.put(key, JSON.stringify(rec), Math.max(1, Math.floor((rec.exp - Date.now()) / 1000)));
+      msg += ' (เหลือ ' + left + ' ครั้ง)';
     }
-    cache.put(key, JSON.stringify(rec), Math.max(1, Math.floor((rec.exp - Date.now()) / 1000)));
-    throw new Error('รหัสพนักงานไม่ถูกต้อง (เหลือ ' + left + ' ครั้ง)');
+    throw new Error(msg);
   }
-  cache.remove(key);
-  return createSession_(rec.email, 'employee', 'เข้าสู่ระบบ (บัญชี Google + รหัสพนักงาน)');
+
+  return withLock_(function () {
+    const list = readAll_(SCHEMA.EMPLOYEES);
+    const mine = list.filter(function (x) { return normEmail_(x.email) === rec.email; })[0];
+    if (mine) {
+      // บัญชีนี้ผูกไว้แล้ว: รหัสต้องตรง
+      if (input !== String(mine.employeeId).trim().toLowerCase()) fail('รหัสพนักงานไม่ถูกต้อง', true);
+      cache.remove(key);
+      return createSession_(rec.email, 'employee', 'เข้าสู่ระบบ (บัญชี Google + รหัสพนักงาน)');
+    }
+    const emp = list.filter(function (x) { return String(x.employeeId).trim().toLowerCase() === input; })[0];
+    if (!emp) fail('ไม่พบรหัสพนักงานนี้ในระบบ', true);
+    if (emp.email) {
+      audit_(rec.email, 'employee', 'พยายามใช้รหัสที่ผูกกับบัญชีอื่น', '', emp.employeeId + ' (ผูกกับ ' + emp.email + ')');
+      fail('รหัสพนักงานนี้ผูกกับบัญชี Google อื่นแล้ว (' + maskEmail_(emp.email) + ') — ถ้าเป็นรหัสของคุณ กรุณาเลือกบัญชีนั้น หรือติดต่อผู้ดูแลระบบให้ยกเลิกการผูก', false);
+    }
+    // ผูกบัญชี Google นี้กับรหัสพนักงาน
+    emp.email = rec.email;
+    emp.linkedAt = new Date();
+    updateObj_(SCHEMA.EMPLOYEES, emp);
+    audit_(rec.email, 'employee', 'ผูกบัญชี Google กับรหัสพนักงาน', '', emp.employeeId + ' ' + emp.name);
+    cache.remove(key);
+    return createSession_(rec.email, 'employee', 'เข้าสู่ระบบ (บัญชี Google + รหัสพนักงาน)');
+  });
 }
 
 function sessionInfo_(email, role) {
@@ -685,7 +714,7 @@ function emp_requestCorrection(token, id, message) {
  */
 
 function empToClient_(e) {
-  return { employeeId: e.employeeId, name: e.name, email: e.email, createdAt: iso_(e.createdAt) };
+  return { employeeId: e.employeeId, name: e.name, email: e.email, createdAt: iso_(e.createdAt), linkedAt: iso_(e.linkedAt) };
 }
 
 function currentFor_(timesheets, employeeId, period) {
@@ -900,50 +929,59 @@ function adm_listEmployees(token) {
 function validateEmployee_(e) {
   const out = {
     employeeId: String(e.employeeId || '').trim(),
-    name: String(e.name || '').trim(),
-    email: normEmail_(e.email)
+    name: String(e.name || '').trim()
   };
   if (!out.employeeId) throw new Error('กรุณากรอกรหัสพนักงาน');
   if (!/^[A-Za-z0-9._-]{1,30}$/.test(out.employeeId)) throw new Error('รหัสพนักงานใช้ได้เฉพาะ A-Z, 0-9, . _ - (ไม่เกิน 30 ตัว)');
   if (!out.name) throw new Error('กรุณากรอกชื่อพนักงาน');
-  if (!isValidEmail_(out.email)) throw new Error('รูปแบบอีเมลไม่ถูกต้อง');
-  if (out.email === adminEmail_()) throw new Error('อีเมลนี้เป็นอีเมลของผู้ดูแลระบบ ใช้เป็นอีเมลพนักงานไม่ได้');
   return out;
 }
 
-/** หน้าเว็บเรียก: เพิ่มพนักงาน */
+/** หน้าเว็บเรียก: เพิ่มพนักงาน (รหัส + ชื่อ) */
 function adm_addEmployee(token, data) {
   const s = requireAdmin_(token);
   const e = validateEmployee_(data || {});
   return withLock_(function () {
     const list = readAll_(SCHEMA.EMPLOYEES);
     list.forEach(function (x) {
-      if (x.employeeId.toLowerCase() === e.employeeId.toLowerCase()) throw new Error('รหัสพนักงาน ' + e.employeeId + ' มีอยู่แล้ว');
-      if (normEmail_(x.email) === e.email) throw new Error('อีเมล ' + e.email + ' มีอยู่แล้ว (' + x.name + ')');
+      if (x.employeeId.toLowerCase() === e.employeeId.toLowerCase()) throw new Error('รหัสพนักงาน ' + e.employeeId + ' มีอยู่แล้ว (' + x.name + ')');
     });
+    e.email = '';
     e.createdAt = new Date();
+    e.linkedAt = null;
     appendObj_(SCHEMA.EMPLOYEES, e);
-    audit_(s.email, 'admin', 'เพิ่มพนักงาน', '', e.employeeId + ' ' + e.name + ' <' + e.email + '>');
+    audit_(s.email, 'admin', 'เพิ่มพนักงาน', '', e.employeeId + ' ' + e.name);
     return empToClient_(e);
   });
 }
 
-/** หน้าเว็บเรียก: แก้ไขชื่อ/อีเมลพนักงาน (รหัสพนักงานแก้ไม่ได้) */
+/** หน้าเว็บเรียก: แก้ไขชื่อพนักงาน (รหัสพนักงานแก้ไม่ได้) */
 function adm_updateEmployee(token, data) {
   const s = requireAdmin_(token);
   const e = validateEmployee_(data || {});
   return withLock_(function () {
-    const list = readAll_(SCHEMA.EMPLOYEES);
-    const cur = list.filter(function (x) { return x.employeeId === e.employeeId; })[0];
+    const cur = readAll_(SCHEMA.EMPLOYEES).filter(function (x) { return x.employeeId === e.employeeId; })[0];
     if (!cur) throw new Error('ไม่พบพนักงานรหัส ' + e.employeeId);
-    list.forEach(function (x) {
-      if (x !== cur && normEmail_(x.email) === e.email) throw new Error('อีเมล ' + e.email + ' มีอยู่แล้ว (' + x.name + ')');
-    });
-    const before = cur.name + ' <' + cur.email + '>';
+    const before = cur.name;
     cur.name = e.name;
-    cur.email = e.email;
     updateObj_(SCHEMA.EMPLOYEES, cur);
-    audit_(s.email, 'admin', 'แก้ไขข้อมูลพนักงาน', '', cur.employeeId + ': ' + before + ' → ' + cur.name + ' <' + cur.email + '>');
+    audit_(s.email, 'admin', 'แก้ไขชื่อพนักงาน', '', cur.employeeId + ': ' + before + ' → ' + cur.name);
+    return empToClient_(cur);
+  });
+}
+
+/** หน้าเว็บเรียก: ยกเลิกการผูกบัญชี Google (พนักงานจะต้องเข้าใหม่และผูกบัญชีอีกครั้ง) */
+function adm_unlinkEmployee(token, employeeId) {
+  const s = requireAdmin_(token);
+  employeeId = String(employeeId || '');
+  return withLock_(function () {
+    const cur = readAll_(SCHEMA.EMPLOYEES).filter(function (x) { return x.employeeId === employeeId; })[0];
+    if (!cur) throw new Error('ไม่พบพนักงานรหัส ' + employeeId);
+    const was = cur.email;
+    cur.email = '';
+    cur.linkedAt = null;
+    updateObj_(SCHEMA.EMPLOYEES, cur);
+    audit_(s.email, 'admin', 'ยกเลิกการผูกบัญชี Google', '', cur.employeeId + ' ' + cur.name + ' (เดิม ' + (was || '-') + ')');
     return empToClient_(cur);
   });
 }
@@ -956,7 +994,7 @@ function adm_deleteEmployee(token, employeeId) {
     const cur = readAll_(SCHEMA.EMPLOYEES).filter(function (x) { return x.employeeId === employeeId; })[0];
     if (!cur) throw new Error('ไม่พบพนักงานรหัส ' + employeeId);
     deleteObj_(SCHEMA.EMPLOYEES, cur);
-    audit_(s.email, 'admin', 'ลบพนักงาน', '', cur.employeeId + ' ' + cur.name + ' <' + cur.email + '>');
+    audit_(s.email, 'admin', 'ลบพนักงาน', '', cur.employeeId + ' ' + cur.name + (cur.email ? ' <' + cur.email + '>' : ''));
     return true;
   });
 }
@@ -984,7 +1022,8 @@ function apiFunctions_() {
     adm_listEmployees: adm_listEmployees,
     adm_addEmployee: adm_addEmployee,
     adm_updateEmployee: adm_updateEmployee,
-    adm_deleteEmployee: adm_deleteEmployee
+    adm_deleteEmployee: adm_deleteEmployee,
+    adm_unlinkEmployee: adm_unlinkEmployee
   };
 }
 

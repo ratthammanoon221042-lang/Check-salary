@@ -18,21 +18,21 @@ c('setup');
 // admin login
 expectErr('googleLogin', /GOOGLE_CLIENT_ID/, tok({ email: 'owner@gmail.com' }));
 env.props.GOOGLE_CLIENT_ID = CID;
-expectErr('googleLogin', /ไม่อยู่ในรายชื่อ/, tok({ email: 'nobody@x.com' }));
 const adm = c('googleLogin', tok({ email: 'Owner@Gmail.com' }));
 assert.equal(adm.user.role, 'admin');
 assert(!adm.needEmployeeId, 'admin skips employee id step');
 const A = adm.token;
 
 // employees
-expectErr('adm_addEmployee', /อีเมลของผู้ดูแล/, A, { employeeId: 'E1', name: 'x', email: 'owner@gmail.com' });
-c('adm_addEmployee', A, { employeeId: '001', name: 'สมชาย ใจดี', email: 'Somchai@Example.com' });
-c('adm_addEmployee', A, { employeeId: 'EMP002', name: 'สมหญิง รักงาน', email: 'somying@example.com' });
-expectErr('adm_addEmployee', /มีอยู่แล้ว/, A, { employeeId: '001', name: 'dup', email: 'z@example.com' });
-expectErr('adm_addEmployee', /มีอยู่แล้ว/, A, { employeeId: 'E9', name: 'dup', email: 'somchai@example.com' });
+c('adm_addEmployee', A, { employeeId: '001', name: 'สมชาย ใจดี' });
+c('adm_addEmployee', A, { employeeId: 'EMP002', name: 'สมหญิง รักงาน', email: 'ignored@example.com' }); // อีเมลไม่ใช้แล้ว
+expectErr('adm_addEmployee', /มีอยู่แล้ว/, A, { employeeId: '001', name: 'dup' });
+expectErr('adm_addEmployee', /มีอยู่แล้ว/, A, { employeeId: 'emp002', name: 'dup' });
+expectErr('adm_addEmployee', /ชื่อ/, A, { employeeId: 'E9', name: ' ' });
 let emps = c('adm_listEmployees', A);
-assert.equal(emps.length, 2); assert.equal(emps[0].employeeId, '001'); assert.equal(emps[0].email, 'somchai@example.com');
-c('adm_updateEmployee', A, { employeeId: 'EMP002', name: 'สมหญิง ขยัน', email: 'somying@example.com' });
+assert.equal(emps.length, 2); assert.equal(emps[0].employeeId, '001'); assert.equal(emps[0].email, ''); assert.equal(emps[1].email, '');
+c('adm_updateEmployee', A, { employeeId: 'EMP002', name: 'สมหญิง ขยัน' });
+assert.equal(c('adm_listEmployees', A)[1].name, 'สมหญิง ขยัน');
 
 // upload
 const pdf = Buffer.from('%PDF-1.4 fake').toString('base64');
@@ -49,11 +49,21 @@ assert.deepEqual(d.periods, ['2026-11', '2026-10']);
 // employee login & access control
 expectErr('emp_listMyTimesheets', /AUTH/, A);
 expectErr('adm_getDashboard', /AUTH/, 'garbage', '2026-11');
-const step1 = c('googleLogin', tok({ email: 'somchai@example.com' }));
-assert.equal(step1.needEmployeeId, true); assert(!step1.token); assert.equal(step1.name, 'สมชาย ใจดี');
-expectErr('verifyEmployeeId', /ไม่ถูกต้อง \(เหลือ 4/, step1.pending, 'EMP002');
+// ครั้งแรก: บัญชีไหนก็ได้ กรอกรหัสที่ยังไม่ผูก -> ผูกให้
+const step1 = c('googleLogin', tok({ email: 'Somchai@Example.com' }));
+assert.equal(step1.needEmployeeId, true); assert(!step1.token); assert.equal(step1.firstTime, true); assert.equal(step1.name, '');
+expectErr('verifyEmployeeId', /ไม่พบรหัสพนักงาน.*เหลือ 4/, step1.pending, 'NOPE');
 const E = c('verifyEmployeeId', step1.pending, ' 001 ').token;
 expectErr('verifyEmployeeId', /หมดเวลา/, step1.pending, '001'); // ใช้ได้ครั้งเดียว
+emps = c('adm_listEmployees', A);
+assert.equal(emps[0].email, 'somchai@example.com'); assert(emps[0].linkedAt);
+// ครั้งถัดไป: รู้จักชื่อแล้ว และต้องกรอกรหัสที่ผูกไว้เท่านั้น
+const again = c('googleLogin', tok({ email: 'somchai@example.com' }));
+assert.equal(again.firstTime, false); assert.equal(again.name, 'สมชาย ใจดี');
+expectErr('verifyEmployeeId', /รหัสพนักงานไม่ถูกต้อง/, again.pending, 'EMP002'); // ใช้รหัสคนอื่นไม่ได้
+// บัญชีอื่นมาใช้รหัสที่ผูกแล้ว -> ไม่ได้
+const thief = c('googleLogin', tok({ email: 'thief@gmail.com' }));
+expectErr('verifyEmployeeId', /ผูกกับบัญชี Google อื่นแล้ว \(s\*\*\*\*\*@example\.com\)/, thief.pending, '001');
 expectErr('adm_getDashboard', /AUTH: ไม่มีสิทธิ์/, E, '2026-11');
 const E2 = login('somying@example.com', 'emp002'); // ไม่สนตัวพิมพ์เล็ก-ใหญ่
 
@@ -101,12 +111,26 @@ console.log('audit actions:', det.audit.map(a => a.action).join(', '));
 // delete employee -> session revoked, history kept
 c('adm_deleteEmployee', A, '001');
 expectErr('emp_listMyTimesheets', /ถูกนำออก/, E);
-expectErr('googleLogin', /ไม่อยู่ในรายชื่อ/, tok({ email: 'somchai@example.com' }));
 assert.equal(c('adm_listEmployees', A).length, 1);
-c('adm_addEmployee', A, { employeeId: '001', name: 'สมชาย ใจดี', email: 'somchai@example.com' });
+c('adm_addEmployee', A, { employeeId: '001', name: 'สมชาย ใจดี' });
 assert.equal(c('adm_getDashboard', A, '2026-11').summary.confirmed, 1);
+// เพิ่มกลับแล้วต้องผูกใหม่ (บัญชีอื่นผูกได้เพราะยังว่าง)
+const E3 = login('somchai2@gmail.com', '001');
+assert.equal(c('emp_listMyTimesheets', E3).timesheets.length, 2);
+
+// ยกเลิกการผูก: session เดิมใช้ไม่ได้ และบัญชีใหม่ผูกแทนได้
+c('adm_unlinkEmployee', A, '001');
+expectErr('emp_listMyTimesheets', /ถูกนำออก/, E3);
+assert.equal(c('adm_listEmployees', A).find(e => e.employeeId === '001').email, '');
+const E4 = login('somchai@example.com', '001');
+assert.equal(c('emp_listMyTimesheets', E4).profile.employeeId, '001');
+expectErr('adm_unlinkEmployee', /AUTH/, E4, '001');
+// บัญชีที่ผูกแล้วผูกรหัสอื่นเพิ่มไม่ได้
+const twice = c('googleLogin', tok({ email: 'somchai@example.com' }));
+expectErr('verifyEmployeeId', /รหัสพนักงานไม่ถูกต้อง/, twice.pending, 'EMP002');
 
 // เดารหัสพนักงาน
+const E2b = login('somying@example.com', 'EMP002');
 const bf = c('googleLogin', tok({ email: 'somying@example.com' }));
 for (let i = 0; i < 4; i++) expectErr('verifyEmployeeId', /ไม่ถูกต้อง/, bf.pending, 'X' + i);
 expectErr('verifyEmployeeId', /หลายครั้ง/, bf.pending, 'X9');

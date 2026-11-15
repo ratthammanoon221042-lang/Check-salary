@@ -460,8 +460,12 @@ var App = (function () {
     var idInput = el('input', { class: 'input', style: 'font-size:20px;text-align:center;letter-spacing:2px', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', placeholder: 'เช่น EMP001' });
     var goBtn = el('button', { class: 'btn btn-primary btn-block btn-lg', type: 'submit', text: 'เข้าสู่ระบบ' });
     var form = el('form', { class: 'stack' },
-      el('div', { class: 'callout callout-info', style: 'text-align:center' },
-        'สวัสดี คุณ', el('b', { text: res.name || '' }), el('br'), el('span', { class: 'small', text: res.email })),
+      res.firstTime
+        ? el('div', { class: 'callout callout-info', style: 'text-align:center' },
+          el('b', { text: 'เข้าใช้งานครั้งแรก' }), el('br'),
+          'กรอกรหัสพนักงานของคุณ ระบบจะผูกบัญชี ', el('b', { text: res.email }), ' กับรหัสนี้ ครั้งต่อไปใช้บัญชีนี้เข้าได้เลย')
+        : el('div', { class: 'callout callout-info', style: 'text-align:center' },
+          'สวัสดี คุณ', el('b', { text: res.name || '' }), el('br'), el('span', { class: 'small', text: res.email })),
       el('label', { class: 'field' }, el('span', { text: 'กรอกรหัสพนักงานของคุณ' }), idInput),
       goBtn,
       el('div', { style: 'text-align:center' },
@@ -479,7 +483,7 @@ var App = (function () {
         Core.busy(goBtn, false);
         var msg = Core.errMsg(e2);
         card.err.textContent = msg;
-        if (/หมดเวลา|หลายครั้ง|ไม่พบบัญชี/.test(msg)) {
+        if (/หมดเวลา|หลายครั้ง/.test(msg)) {
           setTimeout(function () { showLogin(); Core.toast(msg, 'error'); }, 1500);
         } else {
           idInput.select();

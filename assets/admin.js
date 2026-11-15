@@ -154,7 +154,7 @@ var AdminApp = (function () {
           ? el('button', { class: 'btn btn-sm', text: 'รายละเอียด', onclick: function (e) { e.stopPropagation(); openDetail(t.id); } })
           : el('button', { class: 'btn btn-sm btn-primary', text: 'อัปโหลด', onclick: function (e) { e.stopPropagation(); quickUpload(r.employee, false); } });
         tbody.appendChild(el('tr', { class: t ? 'clickable' : '', onclick: t ? function () { openDetail(t.id); } : null },
-          el('td', {}, el('div', { style: 'font-weight:600', text: r.employee.name }), el('div', { class: 'muted small', text: r.employee.employeeId + ' · ' + r.employee.email })),
+          el('td', {}, el('div', { style: 'font-weight:600', text: r.employee.name }), el('div', { class: 'muted small', text: r.employee.employeeId + (r.employee.email ? ' · ' + r.employee.email : ' · ยังไม่เคยเข้าระบบ') })),
           el('td', {}, Core.badge(t ? t.status : ''), r.awaitingReply ? el('div', { class: 'small', style: 'color:var(--bad);margin-top:2px', text: '● รอคุณตอบ' }) : null),
           el('td', { class: 'nowrap', text: t ? 'ฉบับที่ ' + t.version : '-' }),
           el('td', {}, viewCell),
@@ -195,7 +195,7 @@ var AdminApp = (function () {
     // ข้อมูลหลัก
     var info = el('dl', { class: 'kv' },
       el('dt', { text: 'พนักงาน' }), el('dd', { text: t.employeeName + ' (' + t.employeeId + ')' }),
-      el('dt', { text: 'อีเมล' }), el('dd', { text: t.email }),
+      el('dt', { text: 'บัญชี Google' }), el('dd', { text: t.email || '-' }),
       el('dt', { text: 'รอบเดือน' }), el('dd', { text: t.periodLabel }),
       el('dt', { text: 'ฉบับที่' }), el('dd', { text: String(t.version) }),
       el('dt', { text: 'สถานะ' }), el('dd', {}, Core.badge(t.status)),
@@ -831,20 +831,18 @@ var AdminApp = (function () {
     Core.clear(main);
     var idIn = el('input', { class: 'input', placeholder: 'เช่น EMP001', maxlength: '30' });
     var nameIn = el('input', { class: 'input', placeholder: 'ชื่อ-นามสกุล' });
-    var emailIn = el('input', { class: 'input', type: 'email', placeholder: 'name@example.com' });
     var addBtn = el('button', { class: 'btn btn-primary', type: 'submit', text: '+ เพิ่มพนักงาน' });
-    var form = el('form', { style: 'display:grid;grid-template-columns:1fr 2fr 2fr auto;gap:10px;align-items:end' },
+    var form = el('form', { style: 'display:grid;grid-template-columns:1fr 2fr auto;gap:10px;align-items:end' },
       el('label', { class: 'field' }, el('span', { text: 'รหัสพนักงาน' }), idIn),
       el('label', { class: 'field' }, el('span', { text: 'ชื่อ-นามสกุล' }), nameIn),
-      el('label', { class: 'field' }, el('span', { text: 'อีเมลบัญชี Google (Gmail) ที่ใช้ล็อกอิน' }), emailIn),
       addBtn);
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       Core.busy(addBtn, true, 'กำลังเพิ่ม...');
-      Core.api('adm_addEmployee', { employeeId: idIn.value, name: nameIn.value, email: emailIn.value }).then(function (emp) {
+      Core.api('adm_addEmployee', { employeeId: idIn.value, name: nameIn.value }).then(function (emp) {
         Core.busy(addBtn, false);
         Core.toast('เพิ่ม ' + emp.name + ' แล้ว', 'ok');
-        idIn.value = ''; nameIn.value = ''; emailIn.value = '';
+        idIn.value = ''; nameIn.value = '';
         idIn.focus();
         load();
       }).catch(function (e2) { Core.busy(addBtn, false); Core.toast(Core.errMsg(e2), 'error'); });
@@ -854,11 +852,11 @@ var AdminApp = (function () {
     var tbody = el('tbody');
     var countEl = el('span', { class: 'muted' });
     main.appendChild(el('div', { class: 'card' }, el('h2', { text: 'เพิ่มพนักงาน' }), form,
-      el('p', { class: 'hint', style: 'margin:10px 0 0', text: 'พนักงานล็อกอินด้วยบัญชี Google ที่มีอีเมลนี้ แล้วกรอกรหัสพนักงานเพื่อยืนยันตัวตน · รหัสพนักงานแก้ไขภายหลังไม่ได้' })));
+      el('p', { class: 'hint', style: 'margin:10px 0 0', text: 'พนักงานกดลงชื่อเข้าใช้ด้วย Google แล้วกรอกรหัสพนักงาน — ครั้งแรกระบบจะผูกบัญชี Google นั้นกับรหัสนี้ให้เอง · รหัสพนักงานแก้ไขภายหลังไม่ได้' })));
     main.appendChild(el('div', { class: 'card' },
       el('div', { class: 'section-title' }, el('h2', { text: 'รายชื่อพนักงาน' }), countEl, el('div', { class: 'spacer' }), search),
       el('div', { class: 'table-wrap' }, el('table', { class: 'table' },
-        el('thead', {}, el('tr', {}, el('th', { text: 'รหัส' }), el('th', { text: 'ชื่อ-นามสกุล' }), el('th', { text: 'อีเมล' }), el('th', { text: 'ใบลงเวลา' }), el('th', { text: 'เพิ่มเมื่อ' }), el('th'))),
+        el('thead', {}, el('tr', {}, el('th', { text: 'รหัส' }), el('th', { text: 'ชื่อ-นามสกุล' }), el('th', { text: 'บัญชี Google ที่ผูกไว้' }), el('th', { text: 'ใบลงเวลา' }), el('th', { text: 'เพิ่มเมื่อ' }), el('th'))),
         tbody))));
 
     // ปรับฟอร์มบนจอเล็ก
@@ -878,11 +876,14 @@ var AdminApp = (function () {
         tbody.appendChild(el('tr', {},
           el('td', { class: 'nowrap', style: 'font-weight:600', text: e.employeeId }),
           el('td', { text: e.name }),
-          el('td', { text: e.email }),
+          el('td', {}, e.email
+            ? el('div', {}, el('div', { text: e.email }), el('div', { class: 'small muted', text: 'ผูกเมื่อ ' + Core.fmtShort(e.linkedAt) }))
+            : el('span', { class: 'small muted', text: 'ยังไม่เคยเข้าระบบ' })),
           el('td', { text: e.timesheetCount + ' รอบ' }),
           el('td', { class: 'nowrap small muted', text: Core.fmtShort(e.createdAt) }),
           el('td', { class: 'nowrap', style: 'text-align:right' },
-            el('button', { class: 'btn btn-sm', text: 'แก้ไข', onclick: function () { edit(e); } }), ' ',
+            el('button', { class: 'btn btn-sm', text: 'แก้ไขชื่อ', onclick: function () { edit(e); } }), ' ',
+            e.email ? el('button', { class: 'btn btn-sm', text: 'ยกเลิกการผูก', onclick: function () { unlink(e); } }) : null, e.email ? ' ' : null,
             el('button', { class: 'btn btn-sm btn-danger', text: 'ลบ', onclick: function () { del(e); } }))));
       });
     }
@@ -896,20 +897,32 @@ var AdminApp = (function () {
 
     function edit(emp) {
       var n = el('input', { class: 'input', value: emp.name });
-      var em = el('input', { class: 'input', type: 'email', value: emp.email });
       var save = el('button', { class: 'btn btn-primary', type: 'submit', text: 'บันทึก' });
       var f = el('form', { class: 'stack' },
         el('label', { class: 'field' }, el('span', { text: 'รหัสพนักงาน' }), el('input', { class: 'input', value: emp.employeeId, disabled: true })),
         el('label', { class: 'field' }, el('span', { text: 'ชื่อ-นามสกุล' }), n),
-        el('label', { class: 'field' }, el('span', { text: 'อีเมล' }), em),
         el('div', { class: 'row', style: 'justify-content:flex-end' }, save));
-      var m = Core.modal({ title: 'แก้ไขข้อมูลพนักงาน', body: f });
+      var m = Core.modal({ title: 'แก้ไขชื่อพนักงาน', body: f });
       f.addEventListener('submit', function (ev) {
         ev.preventDefault();
         Core.busy(save, true, 'กำลังบันทึก...');
-        Core.api('adm_updateEmployee', { employeeId: emp.employeeId, name: n.value, email: em.value }).then(function () {
+        Core.api('adm_updateEmployee', { employeeId: emp.employeeId, name: n.value }).then(function () {
           m.close(); Core.toast('บันทึกแล้ว', 'ok'); load();
         }).catch(function (e) { Core.busy(save, false); Core.toast(Core.errMsg(e), 'error'); });
+      });
+    }
+
+    function unlink(emp) {
+      Core.confirmDialog({
+        title: 'ยกเลิกการผูกบัญชี Google',
+        okText: 'ยกเลิกการผูก',
+        message: el('div', { class: 'stack' },
+          el('p', { style: 'margin:0' }, el('b', { text: emp.name + ' (' + emp.employeeId + ')' }), ' ผูกอยู่กับบัญชี ', el('b', { text: emp.email })),
+          el('p', { class: 'hint', style: 'margin:0', text: 'หลังยกเลิก บัญชีนี้จะเข้าระบบไม่ได้ทันที และบัญชี Google ถัดไปที่กรอกรหัสนี้จะถูกผูกแทน ใช้เมื่อพนักงานเปลี่ยนบัญชี หรือมีคนอื่นผูกรหัสนี้ไปโดยไม่ถูกต้อง' }))
+      }).then(function (ok) {
+        if (!ok) return;
+        Core.api('adm_unlinkEmployee', emp.employeeId).then(function () { Core.toast('ยกเลิกการผูกบัญชีของ ' + emp.name + ' แล้ว', 'ok'); load(); })
+          .catch(function (e) { Core.toast(Core.errMsg(e), 'error'); });
       });
     }
 
