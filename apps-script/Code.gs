@@ -21,9 +21,8 @@
 const APP_NAME = 'ระบบตรวจสอบใบลงเวลา';
 const TZ = 'Asia/Bangkok';
 
-const OTP_TTL_SEC = 600;          // รหัส OTP ใช้ได้ 10 นาที
-const OTP_COOLDOWN_SEC = 60;      // ขอรหัสใหม่ได้ทุก 1 นาที
-const OTP_MAX_ATTEMPTS = 5;       // กรอกผิดได้สูงสุด 5 ครั้งต่อรหัส
+const EMPID_TTL_SEC = 600;        // หลังกดปุ่ม Google ต้องกรอกรหัสพนักงานภายใน 10 นาที
+const EMPID_MAX_ATTEMPTS = 5;     // กรอกรหัสพนักงานผิดได้สูงสุด 5 ครั้ง
 const SESSION_TTL_SEC = 21600;    // อยู่ในระบบได้ 6 ชั่วโมง (สูงสุดของ CacheService)
 const MAX_FILE_MB = 10;           // ขนาดไฟล์สูงสุดต่อไฟล์
 const MAX_MESSAGE_LEN = 1000;
@@ -324,11 +323,11 @@ function periodLabel_(p) {
 }
 
 /* ============================================================
- * การยืนยันตัวตน (OTP)
+ * การยืนยันตัวตน (บัญชี Google + รหัสพนักงาน)
  * ============================================================ */
 
 /**
- * การยืนยันตัวตนด้วยรหัส OTP ทางอีเมล และการจัดการ session
+ * การยืนยันตัวตน: ล็อกอินด้วยบัญชี Google แล้วกรอกรหัสพนักงาน และการจัดการ session
  */
 
 function adminEmail_() {
@@ -356,77 +355,6 @@ function roleForEmail_(email) {
   if (email && email === adminEmail_()) return 'admin';
   if (findEmployeeByEmail_(email)) return 'employee';
   return null;
-}
-
-function genOtp_() {
-  const hex = Utilities.getUuid().replace(/-/g, '').slice(0, 12);
-  const n = parseInt(hex, 16) % 1000000;
-  return ('000000' + n).slice(-6);
-}
-
-/** หน้าเว็บเรียก: ขอรหัส OTP */
-function requestOtp(email) {
-  email = normEmail_(email);
-  if (!isValidEmail_(email)) throw new Error('รูปแบบอีเมลไม่ถูกต้อง');
-  const role = roleForEmail_(email);
-  if (!role) throw new Error('ไม่พบอีเมลนี้ในรายชื่อพนักงาน กรุณาติดต่อผู้ดูแลระบบ');
-
-  const cache = CacheService.getScriptCache();
-  if (cache.get('otpcd_' + email)) {
-    throw new Error('เพิ่งส่งรหัสไปเมื่อสักครู่ กรุณารอ 1 นาทีก่อนขอรหัสใหม่');
-  }
-  if (MailApp.getRemainingDailyQuota() < 1) {
-    throw new Error('วันนี้ระบบส่งอีเมลครบโควตาแล้ว กรุณาลองใหม่พรุ่งนี้หรือติดต่อผู้ดูแลระบบ');
-  }
-
-  const code = genOtp_();
-  const exp = Date.now() + OTP_TTL_SEC * 1000;
-  cache.put('otp_' + email, JSON.stringify({ h: sha256Hex_(code + '|' + email), a: 0, exp: exp }), OTP_TTL_SEC);
-  cache.put('otpcd_' + email, '1', OTP_COOLDOWN_SEC);
-
-  const minutes = Math.round(OTP_TTL_SEC / 60);
-  MailApp.sendEmail({
-    to: email,
-    name: APP_NAME,
-    subject: 'รหัสเข้าสู่ระบบ ' + code + ' — ' + APP_NAME,
-    body: 'รหัสเข้าสู่ระบบของคุณคือ ' + code + '\nรหัสนี้ใช้ได้ ' + minutes +
-      ' นาที\n\nหากคุณไม่ได้ขอรหัสนี้ ไม่ต้องทำอะไร',
-    htmlBody:
-      '<div style="font-family:Tahoma,sans-serif;font-size:15px;color:#1f2937">' +
-      '<p>รหัสเข้าสู่ระบบ <b>' + APP_NAME + '</b> ของคุณคือ</p>' +
-      '<p style="font-size:32px;letter-spacing:8px;font-weight:bold;margin:16px 0">' + code + '</p>' +
-      '<p>รหัสนี้ใช้ได้ ' + minutes + ' นาที ห้ามบอกรหัสนี้กับผู้อื่น</p>' +
-      '<p style="color:#6b7280;font-size:13px">หากคุณไม่ได้ขอรหัสนี้ ไม่ต้องทำอะไร</p></div>'
-  });
-  audit_(email, role, 'ขอรหัส OTP', '', '');
-  return { ok: true, minutes: minutes };
-}
-
-/** หน้าเว็บเรียก: ยืนยันรหัส OTP แล้วรับ token */
-function verifyOtp(email, code) {
-  email = normEmail_(email);
-  code = String(code || '').replace(/\D/g, '');
-  const cache = CacheService.getScriptCache();
-  const key = 'otp_' + email;
-  const raw = cache.get(key);
-  if (!raw) throw new Error('รหัสหมดอายุหรือยังไม่ได้ขอรหัส กรุณาขอรหัสใหม่');
-  const rec = JSON.parse(raw);
-  if (rec.a >= OTP_MAX_ATTEMPTS) {
-    cache.remove(key);
-    throw new Error('กรอกรหัสผิดหลายครั้งเกินไป กรุณาขอรหัสใหม่');
-  }
-  if (sha256Hex_(code + '|' + email) !== rec.h) {
-    rec.a += 1;
-    const remainSec = Math.max(1, Math.floor((rec.exp - Date.now()) / 1000));
-    cache.put(key, JSON.stringify(rec), remainSec);
-    const left = OTP_MAX_ATTEMPTS - rec.a;
-    throw new Error(left > 0 ? 'รหัสไม่ถูกต้อง (เหลือ ' + left + ' ครั้ง)' : 'กรอกรหัสผิดหลายครั้งเกินไป กรุณาขอรหัสใหม่');
-  }
-  cache.remove(key);
-
-  const role = roleForEmail_(email);
-  if (!role) throw new Error('ไม่พบอีเมลนี้ในรายชื่อพนักงาน');
-  return createSession_(email, role, 'เข้าสู่ระบบ (รหัส OTP)');
 }
 
 function createSession_(email, role, how) {
@@ -460,7 +388,40 @@ function googleLogin(idToken) {
   const email = normEmail_(info.email);
   const role = roleForEmail_(email);
   if (!role) throw new Error('บัญชี ' + email + ' ไม่อยู่ในรายชื่อพนักงาน — ถ้ามีหลายบัญชี ให้เลือกบัญชีที่แจ้งไว้กับบริษัท หรือติดต่อผู้ดูแลระบบ');
-  return createSession_(email, role, 'เข้าสู่ระบบ (บัญชี Google)');
+  if (role === 'admin') return createSession_(email, role, 'เข้าสู่ระบบ (บัญชี Google)');
+
+  // พนักงาน: ต้องกรอกรหัสพนักงานอีกชั้น
+  const pending = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  CacheService.getScriptCache().put('pend_' + pending, JSON.stringify({ email: email, a: 0, exp: Date.now() + EMPID_TTL_SEC * 1000 }), EMPID_TTL_SEC);
+  const emp = findEmployeeByEmail_(email);
+  return { needEmployeeId: true, pending: pending, name: emp ? emp.name : '', email: email };
+}
+
+/** หน้าเว็บเรียก: ขั้นที่ 2 ของพนักงาน — กรอกรหัสพนักงานให้ตรงกับบัญชี Google ที่ล็อกอิน */
+function verifyEmployeeId(pending, employeeId) {
+  const cache = CacheService.getScriptCache();
+  const key = 'pend_' + String(pending || '');
+  const raw = cache.get(key);
+  if (!raw) throw new Error('หมดเวลา กรุณากดลงชื่อเข้าใช้ด้วย Google ใหม่อีกครั้ง');
+  const rec = JSON.parse(raw);
+  const emp = findEmployeeByEmail_(rec.email);
+  if (!emp) { cache.remove(key); throw new Error('ไม่พบบัญชีนี้ในรายชื่อพนักงาน'); }
+
+  const input = String(employeeId || '').trim().toLowerCase();
+  if (!input) throw new Error('กรุณากรอกรหัสพนักงาน');
+  if (input !== String(emp.employeeId).trim().toLowerCase()) {
+    rec.a += 1;
+    const left = EMPID_MAX_ATTEMPTS - rec.a;
+    audit_(rec.email, 'employee', 'กรอกรหัสพนักงานผิด', '', 'ครั้งที่ ' + rec.a);
+    if (left <= 0) {
+      cache.remove(key);
+      throw new Error('กรอกรหัสพนักงานผิดหลายครั้งเกินไป กรุณากดลงชื่อเข้าใช้ด้วย Google ใหม่');
+    }
+    cache.put(key, JSON.stringify(rec), Math.max(1, Math.floor((rec.exp - Date.now()) / 1000)));
+    throw new Error('รหัสพนักงานไม่ถูกต้อง (เหลือ ' + left + ' ครั้ง)');
+  }
+  cache.remove(key);
+  return createSession_(rec.email, 'employee', 'เข้าสู่ระบบ (บัญชี Google + รหัสพนักงาน)');
 }
 
 function sessionInfo_(email, role) {
@@ -987,9 +948,8 @@ function adm_deleteEmployee(token, employeeId) {
 /** รายชื่อคำสั่งที่หน้าเว็บเรียกได้ (คำสั่งอื่นเรียกไม่ได้) */
 function apiFunctions_() {
   return {
-    requestOtp: requestOtp,
-    verifyOtp: verifyOtp,
     googleLogin: googleLogin,
+    verifyEmployeeId: verifyEmployeeId,
     getSession: getSession,
     logout: logout,
     emp_listMyTimesheets: emp_listMyTimesheets,
@@ -1043,8 +1003,7 @@ function setup() {
   console.log('ฐานข้อมูล Google Sheet: ' + ss.getUrl());
   console.log('โฟลเดอร์เก็บไฟล์: ' + folder.getUrl());
   console.log('อีเมลผู้ดูแลระบบ: ' + adminEmail_());
-  console.log('GOOGLE_CLIENT_ID: ' + (googleClientId_() || 'ยังไม่ได้ตั้งค่า (ต้องตั้งถ้าจะใช้ปุ่มล็อกอินด้วย Google)'));
+  console.log('GOOGLE_CLIENT_ID: ' + (googleClientId_() || 'ยังไม่ได้ตั้งค่า — ต้องตั้งก่อนใช้งาน ดู README'));
   // เรียกครั้งเดียวเพื่อให้ Google ขอสิทธิ์เชื่อมต่อภายนอก (ใช้ตรวจการล็อกอินด้วย Google)
   UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo', { muteHttpExceptions: true });
-  console.log('ส่งอีเมลได้อีกวันนี้: ' + MailApp.getRemainingDailyQuota() + ' ฉบับ');
 }

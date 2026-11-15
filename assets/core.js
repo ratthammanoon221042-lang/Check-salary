@@ -269,14 +269,14 @@ var Core = (function () {
  * ========================================================= */
 var App = (function () {
   var el = Core.el;
-  var TOKEN_KEY = 'tsc_token', EMAIL_KEY = 'tsc_email';
+  var TOKEN_KEY = 'tsc_token';
   var self = { token: null, user: null, name: (window.APP_CONFIG && window.APP_CONFIG.APP_NAME) || 'ระบบตรวจสอบใบลงเวลา' };
 
   function root() { return Core.clear(document.getElementById('app')); }
 
   self.start = function () {
     document.title = self.name;
-    if (!Core.apiConfigured()) return showNotConfigured();
+    if (!Core.apiConfigured() || !Core.googleClientId()) return showNotConfigured();
     var t = Core.store.get(TOKEN_KEY);
     if (!t) return showLogin();
     Core.apiRaw('getSession', t).then(function (user) {
@@ -291,8 +291,10 @@ var App = (function () {
       el('div', { class: 'card login-card' },
         el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '✓' }), self.name),
         el('div', { class: 'callout callout-warn', style: 'margin-top:12px' },
-          el('b', { text: 'ยังไม่ได้เชื่อมต่อฐานข้อมูล' }), el('br'),
-          'กรุณาแก้ไฟล์ config.js ใน GitHub แล้วใส่ URL ของ Apps Script Web app (ลงท้ายด้วย /exec) ที่ API_URL ตามขั้นตอนใน README'))));
+          el('b', { text: 'ยังตั้งค่าระบบไม่ครบ' }), el('br'),
+          Core.apiConfigured()
+            ? 'กรุณาใส่ GOOGLE_CLIENT_ID (ลงท้ายด้วย .apps.googleusercontent.com) ในไฟล์ config.js ใน GitHub ตามขั้นตอนใน README'
+            : 'กรุณาใส่ URL ของ Apps Script Web app (ลงท้ายด้วย /exec) ที่ API_URL ในไฟล์ config.js ใน GitHub ตามขั้นตอนใน README'))));
   }
 
   function route(user) {
@@ -314,139 +316,86 @@ var App = (function () {
     if (!silent) Core.toast('ออกจากระบบแล้ว');
   };
 
-  function showLogin() {
-    var r = root();
-    var errBox = el('div', { class: 'err' });
-    var emailInput = el('input', { class: 'input', type: 'email', autocomplete: 'email', inputmode: 'email', placeholder: 'name@example.com', value: Core.store.get(EMAIL_KEY) || '' });
-    var sendBtn = el('button', { class: 'btn btn-primary btn-block btn-lg', type: 'submit', text: 'ส่งรหัสเข้าสู่ระบบ' });
-    var stage1 = el('form', { class: 'stack' },
-      el('label', { class: 'field' }, el('span', { text: 'อีเมลของคุณ' }), emailInput),
-      sendBtn,
-      el('p', { class: 'hint', style: 'margin:0', text: 'ระบบจะส่งรหัส 6 หลักไปที่อีเมลนี้ ใช้อีเมลที่แจ้งไว้กับบริษัท' }));
-
-    var codeInput = el('input', { class: 'input otp-input', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '6', placeholder: '••••••' });
-    var verifyBtn = el('button', { class: 'btn btn-primary btn-block btn-lg', type: 'submit', text: 'เข้าสู่ระบบ' });
-    var resendBtn = el('button', { class: 'linkbtn', type: 'button', text: 'ส่งรหัสใหม่' });
-    var changeBtn = el('button', { class: 'linkbtn', type: 'button', text: 'เปลี่ยนอีเมล' });
-    var sentTo = el('b');
-    var stage2 = el('form', { class: 'stack hidden' },
-      el('p', { style: 'margin:0' }, 'ส่งรหัสไปที่ ', sentTo, ' แล้ว กรุณาตรวจสอบกล่องจดหมาย (รวมถึงโฟลเดอร์สแปม)'),
-      el('label', { class: 'field' }, el('span', { text: 'รหัส 6 หลัก' }), codeInput),
-      verifyBtn,
-      el('div', { class: 'row small', style: 'justify-content:space-between' }, changeBtn, resendBtn));
-
-    var timer = null;
-    function cooldown(sec) {
-      clearInterval(timer);
-      resendBtn.disabled = true;
-      var left = sec;
-      resendBtn.textContent = 'ส่งรหัสใหม่ (' + left + ')';
-      timer = setInterval(function () {
-        left--;
-        if (left <= 0) { clearInterval(timer); resendBtn.disabled = false; resendBtn.textContent = 'ส่งรหัสใหม่'; }
-        else resendBtn.textContent = 'ส่งรหัสใหม่ (' + left + ')';
-      }, 1000);
-    }
-
-    function send(btn) {
-      var email = emailInput.value.trim().toLowerCase();
-      errBox.textContent = '';
-      if (!email) { errBox.textContent = 'กรุณากรอกอีเมล'; return; }
-      Core.busy(btn, true, 'กำลังส่งรหัส...');
-      Core.apiRaw('requestOtp', email).then(function () {
-        Core.busy(btn, false);
-        Core.store.set(EMAIL_KEY, email);
-        sentTo.textContent = email;
-        stage1.classList.add('hidden');
-        stage2.classList.remove('hidden');
-        codeInput.value = '';
-        codeInput.focus();
-        cooldown(60);
-      }).catch(function (e) {
-        Core.busy(btn, false);
-        errBox.textContent = Core.errMsg(e);
-      });
-    }
-
-    stage1.addEventListener('submit', function (e) { e.preventDefault(); send(sendBtn); });
-    resendBtn.addEventListener('click', function () { send(resendBtn); });
-    changeBtn.addEventListener('click', function () {
-      clearInterval(timer);
-      stage2.classList.add('hidden'); stage1.classList.remove('hidden'); errBox.textContent = '';
-    });
-    codeInput.addEventListener('input', function () { codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 6); });
-    stage2.addEventListener('submit', function (e) {
-      e.preventDefault();
-      errBox.textContent = '';
-      var code = codeInput.value.trim();
-      if (code.length !== 6) { errBox.textContent = 'กรุณากรอกรหัสให้ครบ 6 หลัก'; return; }
-      Core.busy(verifyBtn, true, 'กำลังตรวจสอบ...');
-      Core.apiRaw('verifyOtp', sentTo.textContent, code).then(function (res) {
-        clearInterval(timer);
-        loggedIn(res);
-      }).catch(function (e2) {
-        Core.busy(verifyBtn, false);
-        errBox.textContent = Core.errMsg(e2);
-      });
-    });
-
-    function loggedIn(res) {
-      self.token = res.token;
-      Core.store.set(TOKEN_KEY, res.token);
-      route(res.user);
-    }
-
-    // ---- ล็อกอินด้วยบัญชี Google (วิธีหลัก) ----
-    var clientId = Core.googleClientId();
-    var gBox = el('div', { class: 'google-box' });
-    var gStatus = el('div', { class: 'hint', style: 'text-align:center' });
-    var otpToggle = el('button', { class: 'linkbtn small', type: 'button', text: 'ไม่มีบัญชี Google? เข้าสู่ระบบด้วยรหัสทางอีเมล' });
-    var otpWrap = el('div', {}, stage1, stage2);
-    var googleWrap = el('div', { class: 'stack' }, gBox, gStatus,
-      el('div', { style: 'text-align:center;margin-top:18px' }, otpToggle));
-
-    function onCredential(resp) {
-      errBox.textContent = '';
-      gStatus.textContent = 'กำลังเข้าสู่ระบบ...';
-      Core.apiRaw('googleLogin', resp.credential).then(loggedIn).catch(function (e) {
-        gStatus.textContent = '';
-        errBox.textContent = Core.errMsg(e);
-      });
-    }
-
-    function showOtp() {
-      googleWrap.classList.add('hidden');
-      otpWrap.classList.remove('hidden');
-      if (clientId) otpWrap.appendChild(el('div', { style: 'text-align:center;margin-top:14px' },
-        el('button', { class: 'linkbtn small', type: 'button', text: '← กลับไปใช้บัญชี Google', onclick: function () {
-          otpWrap.classList.add('hidden'); googleWrap.classList.remove('hidden'); errBox.textContent = '';
-          this.parentNode.remove();
-        } })));
-      emailInput.focus();
-    }
-    otpToggle.addEventListener('click', showOtp);
-
-    if (clientId) {
-      otpWrap.classList.add('hidden');
-      gBox.appendChild(Core.loading('กำลังโหลด...'));
-      loadGoogle().then(function () {
-        google.accounts.id.initialize({ client_id: clientId, callback: onCredential, ux_mode: 'popup', auto_select: false, context: 'signin' });
-        Core.clear(gBox);
-        google.accounts.id.renderButton(gBox, { type: 'standard', theme: 'filled_blue', size: 'large', text: 'signin_with', shape: 'pill', locale: 'th', width: Math.min(340, Math.max(220, gBox.clientWidth || 300)) });
-        gStatus.textContent = 'กดปุ่มด้านบน แล้วเลือกบัญชี Google ที่แจ้งไว้กับบริษัท';
-      }).catch(function () {
-        Core.clear(gBox);
-        showOtp();
-        errBox.textContent = 'โหลดปุ่มล็อกอินด้วย Google ไม่สำเร็จ ใช้รหัสทางอีเมลแทนได้';
-      });
-    }
-
-    r.appendChild(el('div', { class: 'login-wrap' },
+  function loginCard() {
+    var body = el('div');
+    var errBox = el('div', { class: 'err', style: 'margin-top:10px;text-align:center' });
+    root().appendChild(el('div', { class: 'login-wrap' },
       el('div', { class: 'card login-card' },
         el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '✓' }), self.name),
         el('p', { class: 'muted', style: 'text-align:center;margin:0 0 18px', text: 'ตรวจสอบและยืนยันใบลงเวลาของคุณ' }),
-        clientId ? googleWrap : null, otpWrap, errBox)));
-    if (!clientId) emailInput.focus();
+        body, errBox)));
+    return { body: body, err: errBox };
+  }
+
+  function loggedIn(res) {
+    self.token = res.token;
+    Core.store.set(TOKEN_KEY, res.token);
+    route(res.user);
+  }
+
+  /** ขั้นที่ 1: กดปุ่มลงชื่อเข้าใช้ด้วย Google */
+  function showLogin() {
+    var card = loginCard();
+    var gBox = el('div', { class: 'google-box' }, Core.loading('กำลังโหลด...'));
+    var gStatus = el('div', { class: 'hint', style: 'text-align:center' });
+    card.body.appendChild(el('div', { class: 'stack' }, gBox, gStatus));
+
+    function onCredential(resp) {
+      card.err.textContent = '';
+      gStatus.textContent = 'กำลังตรวจสอบบัญชี...';
+      Core.apiRaw('googleLogin', resp.credential).then(function (res) {
+        if (res.needEmployeeId) showEmployeeIdStep(res);
+        else loggedIn(res);
+      }).catch(function (e) {
+        gStatus.textContent = 'กดปุ่มด้านบน แล้วเลือกบัญชี Google ที่แจ้งไว้กับบริษัท';
+        card.err.textContent = Core.errMsg(e);
+      });
+    }
+
+    loadGoogle().then(function () {
+      google.accounts.id.initialize({ client_id: Core.googleClientId(), callback: onCredential, ux_mode: 'popup', auto_select: false, context: 'signin' });
+      Core.clear(gBox);
+      google.accounts.id.renderButton(gBox, { type: 'standard', theme: 'filled_blue', size: 'large', text: 'signin_with', shape: 'pill', locale: 'th', width: Math.min(340, Math.max(220, gBox.clientWidth || 300)) });
+      gStatus.textContent = 'กดปุ่มด้านบน แล้วเลือกบัญชี Google ที่แจ้งไว้กับบริษัท';
+    }).catch(function () {
+      Core.clear(gBox);
+      card.err.textContent = 'โหลดปุ่มล็อกอินของ Google ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วรีเฟรชหน้า';
+    });
+  }
+
+  /** ขั้นที่ 2 (พนักงาน): กรอกรหัสพนักงาน */
+  function showEmployeeIdStep(res) {
+    var card = loginCard();
+    var idInput = el('input', { class: 'input', style: 'font-size:20px;text-align:center;letter-spacing:2px', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', placeholder: 'เช่น EMP001' });
+    var goBtn = el('button', { class: 'btn btn-primary btn-block btn-lg', type: 'submit', text: 'เข้าสู่ระบบ' });
+    var form = el('form', { class: 'stack' },
+      el('div', { class: 'callout callout-info', style: 'text-align:center' },
+        'สวัสดี คุณ', el('b', { text: res.name || '' }), el('br'), el('span', { class: 'small', text: res.email })),
+      el('label', { class: 'field' }, el('span', { text: 'กรอกรหัสพนักงานของคุณ' }), idInput),
+      goBtn,
+      el('div', { style: 'text-align:center' },
+        el('button', { class: 'linkbtn small', type: 'button', text: 'ไม่ใช่คุณ? ใช้บัญชี Google อื่น', onclick: function () {
+          try { google.accounts.id.disableAutoSelect(); } catch (e) {}
+          showLogin();
+        } })));
+    card.body.appendChild(form);
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      card.err.textContent = '';
+      if (!idInput.value.trim()) { card.err.textContent = 'กรุณากรอกรหัสพนักงาน'; return; }
+      Core.busy(goBtn, true, 'กำลังตรวจสอบ...');
+      Core.apiRaw('verifyEmployeeId', res.pending, idInput.value.trim()).then(loggedIn).catch(function (e2) {
+        Core.busy(goBtn, false);
+        var msg = Core.errMsg(e2);
+        card.err.textContent = msg;
+        if (/หมดเวลา|หลายครั้ง|ไม่พบบัญชี/.test(msg)) {
+          setTimeout(function () { showLogin(); Core.toast(msg, 'error'); }, 1500);
+        } else {
+          idInput.select();
+        }
+      });
+    });
+    idInput.focus();
   }
 
   var googleLoader = null;

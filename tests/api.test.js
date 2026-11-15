@@ -4,20 +4,25 @@ const { createEnv } = require('./gasmock');
 const env = createEnv({ srcDir: require('path').join(__dirname, '..', 'apps-script'), ownerEmail: 'owner@gmail.com' });
 const c = (fn, ...a) => env.call(fn, a);
 const expectErr = (fn, re, ...a) => { try { c(fn, ...a); } catch (e) { assert(re.test(e.message), fn + ': ' + e.message); return e.message; } throw new Error(fn + ' should fail'); };
-const lastCode = () => env.mails[env.mails.length - 1].subject.match(/\d{6}/)[0];
-const clearCooldown = (email) => env.ctx.CacheService.getScriptCache().remove('otpcd_' + email);
+// จำลอง ID token ของ Google
+const CID = '123-abc.apps.googleusercontent.com';
+const exp = String(Math.floor(Date.now() / 1000) + 3600);
+let tokN = 0;
+const tok = (payload) => { const t = 'h.t' + (tokN++) + '.s'; env.googleTokens[t] = Object.assign({ aud: CID, iss: 'https://accounts.google.com', exp, email_verified: 'true' }, payload); return t; };
+const login = (email, empId) => {
+  const r = c('googleLogin', tok({ email }));
+  return r.token ? r.token : c('verifyEmployeeId', r.pending, empId).token;
+};
 
 c('setup');
 // admin login
-expectErr('requestOtp', /ไม่พบอีเมล/, 'nobody@x.com');
-expectErr('requestOtp', /รูปแบบ/, 'bad');
-c('requestOtp', 'Owner@Gmail.com');
-expectErr('requestOtp', /รอ 1 นาที/, 'owner@gmail.com');
-expectErr('verifyOtp', /ไม่ถูกต้อง \(เหลือ 4/, 'owner@gmail.com', '000000x' === lastCode() ? '111111' : (lastCode() === '000000' ? '111111' : '000000'));
-const adm = c('verifyOtp', 'owner@gmail.com', lastCode());
+expectErr('googleLogin', /GOOGLE_CLIENT_ID/, tok({ email: 'owner@gmail.com' }));
+env.props.GOOGLE_CLIENT_ID = CID;
+expectErr('googleLogin', /ไม่อยู่ในรายชื่อ/, tok({ email: 'nobody@x.com' }));
+const adm = c('googleLogin', tok({ email: 'Owner@Gmail.com' }));
 assert.equal(adm.user.role, 'admin');
+assert(!adm.needEmployeeId, 'admin skips employee id step');
 const A = adm.token;
-expectErr('verifyOtp', /หมดอายุ/, 'owner@gmail.com', lastCode()); // single use
 
 // employees
 expectErr('adm_addEmployee', /อีเมลของผู้ดูแล/, A, { employeeId: 'E1', name: 'x', email: 'owner@gmail.com' });
@@ -44,11 +49,13 @@ assert.deepEqual(d.periods, ['2026-11', '2026-10']);
 // employee login & access control
 expectErr('emp_listMyTimesheets', /AUTH/, A);
 expectErr('adm_getDashboard', /AUTH/, 'garbage', '2026-11');
-c('requestOtp', 'somchai@example.com');
-const E = c('verifyOtp', 'somchai@example.com', lastCode()).token;
+const step1 = c('googleLogin', tok({ email: 'somchai@example.com' }));
+assert.equal(step1.needEmployeeId, true); assert(!step1.token); assert.equal(step1.name, 'สมชาย ใจดี');
+expectErr('verifyEmployeeId', /ไม่ถูกต้อง \(เหลือ 4/, step1.pending, 'EMP002');
+const E = c('verifyEmployeeId', step1.pending, ' 001 ').token;
+expectErr('verifyEmployeeId', /หมดเวลา/, step1.pending, '001'); // ใช้ได้ครั้งเดียว
 expectErr('adm_getDashboard', /AUTH: ไม่มีสิทธิ์/, E, '2026-11');
-c('requestOtp', 'somying@example.com');
-const E2 = c('verifyOtp', 'somying@example.com', lastCode()).token;
+const E2 = login('somying@example.com', 'emp002'); // ไม่สนตัวพิมพ์เล็ก-ใหญ่
 
 let mine = c('emp_listMyTimesheets', E);
 assert.equal(mine.timesheets.length, 2); assert.equal(mine.timesheets[0].period, '2026-11');
@@ -94,18 +101,18 @@ console.log('audit actions:', det.audit.map(a => a.action).join(', '));
 // delete employee -> session revoked, history kept
 c('adm_deleteEmployee', A, '001');
 expectErr('emp_listMyTimesheets', /ถูกนำออก/, E);
-expectErr('requestOtp', /ไม่พบอีเมล/, 'somchai@example.com');
+expectErr('googleLogin', /ไม่อยู่ในรายชื่อ/, tok({ email: 'somchai@example.com' }));
 assert.equal(c('adm_listEmployees', A).length, 1);
 c('adm_addEmployee', A, { employeeId: '001', name: 'สมชาย ใจดี', email: 'somchai@example.com' });
 assert.equal(c('adm_getDashboard', A, '2026-11').summary.confirmed, 1);
 
-// OTP brute force
-clearCooldown('somying@example.com');
-c('requestOtp', 'somying@example.com');
-const good = lastCode(); const bad = good === '123456' ? '654321' : '123456';
-for (let i = 0; i < 4; i++) expectErr('verifyOtp', /ไม่ถูกต้อง/, 'somying@example.com', bad);
-expectErr('verifyOtp', /หลายครั้ง/, 'somying@example.com', bad);
-expectErr('verifyOtp', /หมดอายุ|หลายครั้ง/, 'somying@example.com', good);
+// เดารหัสพนักงาน
+const bf = c('googleLogin', tok({ email: 'somying@example.com' }));
+for (let i = 0; i < 4; i++) expectErr('verifyEmployeeId', /ไม่ถูกต้อง/, bf.pending, 'X' + i);
+expectErr('verifyEmployeeId', /หลายครั้ง/, bf.pending, 'X9');
+expectErr('verifyEmployeeId', /หมดเวลา/, bf.pending, 'EMP002');
+expectErr('verifyEmployeeId', /หมดเวลา/, 'garbage', 'EMP002');
+expectErr('requestOtp', /ไม่รู้จักคำสั่ง/, 'somying@example.com'); // OTP ถูกเอาออกแล้ว
 
 // private functions not callable
 expectErr('readAll_', /ไม่รู้จักคำสั่ง/);
@@ -118,21 +125,12 @@ const ping = JSON.parse(env.ctx.doGet().getContent());
 assert(ping.ok);
 const badReq = JSON.parse(env.ctx.doPost({ postData: { contents: 'not json' } }).getContent());
 assert.equal(badReq.ok, false);
-// ---- ล็อกอินด้วยบัญชี Google ----
-const CID = '123-abc.apps.googleusercontent.com';
-const exp = String(Math.floor(Date.now() / 1000) + 3600);
-const tok = (name, payload) => { const t = 'h.' + name + '.s'; env.googleTokens[t] = Object.assign({ aud: CID, iss: 'https://accounts.google.com', exp, email_verified: 'true' }, payload); return t; };
-expectErr('googleLogin', /GOOGLE_CLIENT_ID/, tok('a', { email: 'somying@example.com' }));
-env.props.GOOGLE_CLIENT_ID = CID;
-const g1 = c('googleLogin', tok('b', { email: 'Somying@Example.com' }));
-assert.equal(g1.user.role, 'employee'); assert.equal(g1.user.employeeId, 'EMP002');
-assert.equal(c('emp_listMyTimesheets', g1.token).profile.employeeId, 'EMP002');
-assert.equal(c('googleLogin', tok('adm', { email: 'owner@gmail.com' })).user.role, 'admin');
-expectErr('googleLogin', /Client ID ไม่ตรง/, tok('c', { email: 'somying@example.com', aud: 'other.apps.googleusercontent.com' }));
-expectErr('googleLogin', /ยังไม่ได้ยืนยันอีเมล/, tok('d', { email: 'somying@example.com', email_verified: 'false' }));
-expectErr('googleLogin', /หมดอายุ/, tok('e', { email: 'somying@example.com', exp: '1000' }));
-expectErr('googleLogin', /ยืนยันบัญชี Google ไม่สำเร็จ/, tok('f', { email: 'somying@example.com', iss: 'evil.com' }));
-expectErr('googleLogin', /ไม่อยู่ในรายชื่อ/, tok('g', { email: 'stranger@gmail.com' }));
+// ---- ตรวจ ID token ของ Google ----
+assert.equal(c('emp_listMyTimesheets', login('somying@example.com', 'EMP002')).profile.employeeId, 'EMP002');
+expectErr('googleLogin', /Client ID ไม่ตรง/, tok({ email: 'somying@example.com', aud: 'other.apps.googleusercontent.com' }));
+expectErr('googleLogin', /ยังไม่ได้ยืนยันอีเมล/, tok({ email: 'somying@example.com', email_verified: 'false' }));
+expectErr('googleLogin', /หมดอายุ/, tok({ email: 'somying@example.com', exp: '1000' }));
+expectErr('googleLogin', /ยืนยันบัญชี Google ไม่สำเร็จ/, tok({ email: 'somying@example.com', iss: 'evil.com' }));
 expectErr('googleLogin', /ยืนยันบัญชี Google ไม่สำเร็จ/, 'h.unknown.s');
 expectErr('googleLogin', /ไม่ถูกต้อง/, 'not a jwt');
 

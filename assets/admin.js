@@ -844,7 +844,7 @@ var AdminApp = (function () {
     var form = el('form', { style: 'display:grid;grid-template-columns:1fr 2fr 2fr auto;gap:10px;align-items:end' },
       el('label', { class: 'field' }, el('span', { text: 'รหัสพนักงาน' }), idIn),
       el('label', { class: 'field' }, el('span', { text: 'ชื่อ-นามสกุล' }), nameIn),
-      el('label', { class: 'field' }, el('span', { text: 'อีเมล Gmail / บัญชี Google ที่ใช้ล็อกอิน' }), emailIn),
+      el('label', { class: 'field' }, el('span', { text: 'อีเมลบัญชี Google (Gmail) ที่ใช้ล็อกอิน' }), emailIn),
       addBtn);
     form.addEventListener('submit', function (e) {
       e.preventDefault();
@@ -862,7 +862,7 @@ var AdminApp = (function () {
     var tbody = el('tbody');
     var countEl = el('span', { class: 'muted' });
     main.appendChild(el('div', { class: 'card' }, el('h2', { text: 'เพิ่มพนักงาน' }), form,
-      el('p', { class: 'hint', style: 'margin:10px 0 0', text: 'พนักงานจะกดล็อกอินด้วยบัญชี Google ที่มีอีเมลนี้ (หรือรับรหัสทางอีเมลถ้าไม่มีบัญชี Google) · รหัสพนักงานแก้ไขภายหลังไม่ได้' })));
+      el('p', { class: 'hint', style: 'margin:10px 0 0', text: 'พนักงานล็อกอินด้วยบัญชี Google ที่มีอีเมลนี้ แล้วกรอกรหัสพนักงานเพื่อยืนยันตัวตน · รหัสพนักงานแก้ไขภายหลังไม่ได้' })));
     main.appendChild(el('div', { class: 'card' },
       el('div', { class: 'section-title' }, el('h2', { text: 'รายชื่อพนักงาน' }), countEl, el('div', { class: 'spacer' }), search),
       el('div', { class: 'table-wrap' }, el('table', { class: 'table' },
