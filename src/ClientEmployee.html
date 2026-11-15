@@ -1,0 +1,194 @@
+<script>
+/* =========================================================
+ * หน้าพนักงาน
+ * ========================================================= */
+var EmployeeApp = (function () {
+  var el = Core.el;
+  var state = { user: null, profile: null, list: [], fileCache: {} };
+  var main = null;
+
+  function render(root, user) {
+    state.user = user;
+    state.fileCache = {};
+    main = el('div', { class: 'container narrow' });
+    root.appendChild(Core.topbar(user));
+    root.appendChild(main);
+    loadList();
+  }
+
+  function loadList() {
+    Core.clear(main).appendChild(Core.loading());
+    Core.api('emp_listMyTimesheets').then(function (res) {
+      state.profile = res.profile;
+      state.list = res.timesheets;
+      showList();
+    }).catch(function (e) {
+      Core.clear(main).appendChild(el('div', { class: 'card callout-bad', text: Core.errMsg(e) }));
+    });
+  }
+
+  function showList() {
+    Core.clear(main);
+    var waiting = state.list.filter(function (t) { return t.status !== 'ยืนยันแล้ว'; }).length;
+    main.appendChild(el('div', { style: 'margin-bottom:16px' },
+      el('h1', { style: 'font-size:21px;margin:0 0 4px', text: 'สวัสดี คุณ' + state.profile.name }),
+      el('div', { class: 'muted', text: 'รหัสพนักงาน ' + state.profile.employeeId })));
+
+    if (waiting) {
+      main.appendChild(el('div', { class: 'callout callout-warn', style: 'margin-bottom:16px' },
+        'มีใบลงเวลารอให้คุณตรวจสอบ ', el('b', { text: waiting + ' รายการ' })));
+    }
+
+    if (!state.list.length) {
+      main.appendChild(el('div', { class: 'card empty', text: 'ยังไม่มีใบลงเวลาของคุณในระบบ' }));
+      return;
+    }
+    main.appendChild(el('div', {}, state.list.map(function (t) {
+      var sub = t.status === 'ยืนยันแล้ว'
+        ? 'ยืนยันเมื่อ ' + Core.fmt(t.confirmedAt)
+        : 'อัปโหลดเมื่อ ' + Core.fmtShort(t.uploadedAt) + (t.version > 1 ? ' · ฉบับแก้ไขที่ ' + t.version : '');
+      return el('button', { class: 'ts-item', onclick: function () { showDetail(t.id); } },
+        el('div', { class: 'ts-icon', text: t.mimeType === 'application/pdf' ? 'PDF' : 'IMG' }),
+        el('div', { style: 'flex:1;min-width:0' },
+          el('div', { class: 'title', text: t.periodLabel }),
+          el('div', { class: 'muted small', text: sub })),
+        Core.badge(t.status));
+    })));
+  }
+
+  function find(id) { return state.list.filter(function (t) { return t.id === id; })[0]; }
+  function replaceItem(t) {
+    state.list = state.list.map(function (x) { return x.id === t.id ? Object.assign({}, x, t) : x; });
+  }
+
+  function showDetail(id) {
+    var t = find(id);
+    if (!t) return showList();
+    Core.clear(main);
+    window.scrollTo(0, 0);
+    var confirmed = t.status === 'ยืนยันแล้ว';
+
+    main.appendChild(el('button', { class: 'btn btn-sm', style: 'margin-bottom:14px', text: '← กลับไปหน้ารายการ', onclick: showList }));
+
+    // ---- ส่วนหัว ----
+    var head = el('div', { class: 'card' },
+      el('div', { class: 'section-title' }, el('h2', { text: 'ใบลงเวลา ' + t.periodLabel }), Core.badge(t.status)),
+      el('div', { class: 'muted small', text: 'ฉบับที่ ' + t.version + ' · อัปโหลดเมื่อ ' + Core.fmt(t.uploadedAt) }));
+    var callout;
+    if (confirmed) {
+      callout = el('div', { class: 'callout callout-ok', style: 'margin-top:12px' },
+        el('b', { text: '✓ คุณยืนยันใบลงเวลานี้แล้ว' }), el('br'), 'เมื่อ ' + Core.fmt(t.confirmedAt) + ' (บันทึกเป็นหลักฐานแล้ว)');
+    } else if (t.status === 'ขอแก้ไข') {
+      callout = el('div', { class: 'callout callout-warn', style: 'margin-top:12px' },
+        'คุณแจ้งขอแก้ไขแล้ว รอผู้ดูแลตอบกลับหรือส่งฉบับแก้ไขให้ หากผู้ดูแลชี้แจงแล้วและข้อมูลถูกต้อง กดยืนยันได้เลย');
+    } else {
+      callout = el('div', { class: 'callout callout-info', style: 'margin-top:12px' },
+        'กรุณาตรวจสอบวันและเวลาในใบลงเวลา ถ้าถูกต้องให้กด "ยืนยันว่าถูกต้อง" ถ้าไม่ตรงให้กด "แจ้งแก้ไขเวลา"');
+    }
+    head.appendChild(callout);
+    main.appendChild(head);
+
+    // ---- ไฟล์ ----
+    var viewer = el('div', { class: 'viewer' }, Core.loading('กำลังเปิดไฟล์...'));
+    var dlBtn = el('button', { class: 'btn btn-sm', text: 'ดาวน์โหลดไฟล์', disabled: true });
+    main.appendChild(el('div', { class: 'card' },
+      el('div', { class: 'section-title' }, el('h2', { text: 'ไฟล์ใบลงเวลา' }), el('div', { class: 'spacer' }), dlBtn),
+      viewer));
+
+    // ---- ปุ่มดำเนินการ ----
+    var confirmBtn = el('button', { class: 'btn btn-ok btn-lg', text: '✓ ยืนยันว่าถูกต้อง', disabled: true });
+    var fixBtn = el('button', { class: 'btn btn-lg', text: 'แจ้งแก้ไขเวลา', disabled: true });
+    var msgBox = buildMessageBox(t, confirmed);
+    if (!confirmed) {
+      main.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'row' }, confirmBtn, fixBtn),
+        el('p', { class: 'hint', style: 'margin:10px 0 0', text: 'เมื่อกดยืนยันแล้ว ระบบจะบันทึกวันเวลาไว้เป็นหลักฐาน และจะแก้ไขไม่ได้อีก' })));
+    }
+    main.appendChild(msgBox.card);
+
+    fixBtn.addEventListener('click', function () { msgBox.open(); });
+    confirmBtn.addEventListener('click', function () { doConfirm(t); });
+
+    // โหลดไฟล์ (ระบบบันทึกเวลาที่เปิดดู)
+    var cached = state.fileCache[t.id];
+    var p = cached ? Promise.resolve(cached) : Core.api('emp_getFile', t.id);
+    p.then(function (data) {
+      state.fileCache[t.id] = data;
+      if (data.timesheet) replaceItem(data.timesheet);
+      dlBtn.disabled = false;
+      dlBtn.onclick = function () { Core.downloadFile(data); };
+      confirmBtn.disabled = false;
+      fixBtn.disabled = false;
+      return Core.renderFile(viewer, data);
+    }).catch(function (e) {
+      Core.clear(viewer).appendChild(el('div', { class: 'viewer-empty', text: 'เปิดไฟล์ไม่สำเร็จ: ' + Core.errMsg(e) }));
+    });
+  }
+
+  function buildMessageBox(t, confirmed) {
+    var hasMsgs = t.messages && t.messages.length;
+    var textarea = el('textarea', { class: 'input', maxlength: '1000', placeholder: 'เช่น วันที่ 5 เข้างาน 08:00 แต่ในใบลงเวลาแสดง 09:00' });
+    var sendBtn = el('button', { class: 'btn btn-primary', text: 'ส่งข้อความแจ้งแก้ไข' });
+    var form = el('div', { class: 'stack' + (hasMsgs ? '' : ' hidden'), style: 'margin-top:14px' },
+      el('label', { class: 'field' }, el('span', { text: 'รายละเอียดที่ต้องการแก้ไข (ระบุวันที่และเวลาที่ถูกต้อง)' }), textarea),
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, sendBtn));
+    var card = el('div', { class: 'card' + (hasMsgs ? '' : ' hidden') },
+      el('h2', { text: 'ข้อความแก้ไข' }),
+      Core.thread(t.messages, 'พนักงาน'),
+      confirmed ? null : form);
+
+    sendBtn.addEventListener('click', function () {
+      var msg = textarea.value.trim();
+      if (!msg) { Core.toast('กรุณาพิมพ์รายละเอียด', 'error'); textarea.focus(); return; }
+      Core.busy(sendBtn, true, 'กำลังส่ง...');
+      Core.api('emp_requestCorrection', t.id, msg).then(function (updated) {
+        replaceItem(updated);
+        Core.toast('ส่งข้อความแจ้งแก้ไขแล้ว', 'ok');
+        showDetail(t.id);
+      }).catch(function (e) {
+        Core.busy(sendBtn, false);
+        Core.toast(Core.errMsg(e), 'error');
+      });
+    });
+
+    return {
+      card: card,
+      open: function () {
+        card.classList.remove('hidden');
+        form.classList.remove('hidden');
+        card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setTimeout(function () { textarea.focus(); }, 300);
+      }
+    };
+  }
+
+  function doConfirm(t) {
+    var check = el('input', { type: 'checkbox' });
+    var okBtn = el('button', { class: 'btn btn-ok', text: 'ยืนยัน', disabled: true });
+    var cancelBtn = el('button', { class: 'btn', text: 'ยกเลิก' });
+    var body = el('div', { class: 'stack' },
+      el('p', { style: 'margin:0' }, 'ใบลงเวลา ', el('b', { text: t.periodLabel }), ' (ฉบับที่ ' + t.version + ')'),
+      el('label', { class: 'checkline' }, check,
+        el('span', { text: 'ข้าพเจ้าได้ตรวจสอบใบลงเวลาฉบับนี้แล้ว และยืนยันว่าวันและเวลาทำงานถูกต้อง' })),
+      el('p', { class: 'hint', style: 'margin:0', text: 'ระบบจะบันทึกอีเมล วันเวลาที่ยืนยัน และรหัสตรวจสอบไฟล์ไว้เป็นหลักฐาน' }),
+      el('div', { class: 'row', style: 'justify-content:flex-end;margin-top:12px' }, cancelBtn, okBtn));
+    var m = Core.modal({ title: 'ยืนยันใบลงเวลา', body: body });
+    check.addEventListener('change', function () { okBtn.disabled = !check.checked; });
+    cancelBtn.addEventListener('click', m.close);
+    okBtn.addEventListener('click', function () {
+      Core.busy(okBtn, true, 'กำลังบันทึก...');
+      Core.api('emp_confirm', t.id, { userAgent: navigator.userAgent }).then(function (updated) {
+        m.close();
+        replaceItem(updated);
+        Core.toast('ยืนยันเรียบร้อย บันทึกเวลา ' + Core.fmt(updated.confirmedAt), 'ok');
+        showDetail(t.id);
+      }).catch(function (e) {
+        Core.busy(okBtn, false);
+        Core.toast(Core.errMsg(e), 'error');
+      });
+    });
+  }
+
+  return { render: render };
+})();
+</script>

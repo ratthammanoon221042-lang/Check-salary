@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include_('Styles'); ?>
+</head>
+<body data-app-name="<?= appName ?>">
+  <div id="app"><div class="loading-block"><span class="spinner"></span><div style="margin-top:10px">กำลังโหลด...</div></div></div>
+  <div id="toasts" class="toast-box"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <?!= include_('ClientCore'); ?>
+  <?!= include_('ClientEmployee'); ?>
+  <?!= include_('ClientAdmin'); ?>
+  <script>App.start();</script>
+</body>
+</html>
