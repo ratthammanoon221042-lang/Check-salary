@@ -74,6 +74,7 @@ function createEnv(opts) {
     getId() { return this.id; }
     getBlob() { return this.blob; }
     setDescription(d) { this.desc = d; }
+    setTrashed(v) { this.trashed = !!v; }
   }
   class Folder {
     constructor(name) { this.id = 'D' + crypto.randomUUID().slice(0, 8); this.name = name; this.children = []; drive.folders[this.id] = this; }

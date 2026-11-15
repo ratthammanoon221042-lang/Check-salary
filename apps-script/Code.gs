@@ -262,6 +262,18 @@ function deleteObj_(schema, obj) {
   getSheet_(schema).deleteRow(obj._row);
 }
 
+/** ลบหลายแถว (ลบจากล่างขึ้นบน เพื่อไม่ให้เลขแถวเลื่อน) */
+function deleteObjs_(schema, objs) {
+  const sh = getSheet_(schema);
+  objs.map(function (o) { return o._row; })
+    .sort(function (a, b) { return b - a; })
+    .forEach(function (r) { sh.deleteRow(r); });
+}
+
+function trashFile_(fileId) {
+  try { DriveApp.getFileById(fileId).setTrashed(true); return true; } catch (e) { return false; }
+}
+
 function withLock_(fn) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) throw new Error('ระบบกำลังทำงานหนัก กรุณาลองใหม่อีกครั้ง');
@@ -908,6 +920,66 @@ function adm_uploadTimesheet(token, payload) {
   });
 }
 
+/* ---------- ลบใบลงเวลา ---------- */
+
+function tsSummary_(t) {
+  return t.employeeName + ' (' + t.employeeId + ') ' + periodLabel_(t.period) + ' ฉบับที่ ' + t.version +
+    ' สถานะ ' + t.status + ' | ไฟล์ ' + t.fileName + ' | SHA-256 ' + t.fileHash +
+    (t.confirmedAt ? ' | เคยยืนยันเมื่อ ' + Utilities.formatDate(t.confirmedAt, TZ, 'yyyy-MM-dd HH:mm:ss') : '');
+}
+
+/** หน้าเว็บเรียก: ลบใบลงเวลา 1 ฉบับ (เช่น แนบไฟล์ผิด) — ถ้าเป็นฉบับปัจจุบันและมีฉบับก่อนหน้า จะคืนฉบับก่อนหน้ามาใช้ */
+function adm_deleteTimesheet(token, id) {
+  const s = requireAdmin_(token);
+  id = String(id || '');
+  return withLock_(function () {
+    const all = readAll_(SCHEMA.TIMESHEETS);
+    const ts = all.filter(function (t) { return t.id === id; })[0];
+    if (!ts) throw new Error('ไม่พบใบลงเวลา (อาจถูกลบไปแล้ว)');
+    const msgs = readAll_(SCHEMA.MESSAGES);
+
+    // คืนฉบับก่อนหน้ามาเป็นฉบับปัจจุบัน
+    let restored = null;
+    if (ts.status !== STATUS.SUPERSEDED) {
+      const older = all.filter(function (t) { return t.id !== ts.id && t.employeeId === ts.employeeId && t.period === ts.period; })
+        .sort(function (a, b) { return b.version - a.version; })[0];
+      if (older) {
+        const empMsg = msgs.some(function (m) { return m.timesheetId === older.id && m.sender === SENDER.EMPLOYEE; });
+        older.status = older.confirmedAt ? STATUS.CONFIRMED : (empMsg ? STATUS.CORRECTION : STATUS.PENDING);
+        older.supersededAt = null;
+        updateObj_(SCHEMA.TIMESHEETS, older);
+        restored = older;
+      }
+    }
+    deleteObjs_(SCHEMA.MESSAGES, msgs.filter(function (m) { return m.timesheetId === ts.id; }));
+    const trashed = trashFile_(ts.fileId);
+    deleteObjs_(SCHEMA.TIMESHEETS, [ts]);
+    audit_(s.email, 'admin', 'ลบใบลงเวลา', ts.id, tsSummary_(ts) + (trashed ? ' | ย้ายไฟล์ไปถังขยะ Drive แล้ว' : '') +
+      (restored ? ' | คืนฉบับที่ ' + restored.version + ' มาใช้ (' + restored.status + ')' : ''));
+    return { restored: restored ? tsToClient_(restored) : null };
+  });
+}
+
+/** หน้าเว็บเรียก: ลบใบลงเวลาทุกฉบับของทุกคนในรอบเดือน (เช่น ล้างข้อมูลทดลอง) */
+function adm_deletePeriod(token, period) {
+  const s = requireAdmin_(token);
+  if (!isValidPeriod_(period)) throw new Error('รอบเดือนไม่ถูกต้อง');
+  return withLock_(function () {
+    const list = readAll_(SCHEMA.TIMESHEETS).filter(function (t) { return t.period === period; });
+    if (!list.length) return { deleted: 0 };
+    const ids = {};
+    list.forEach(function (t) { ids[t.id] = true; });
+    deleteObjs_(SCHEMA.MESSAGES, readAll_(SCHEMA.MESSAGES).filter(function (m) { return ids[m.timesheetId]; }));
+    list.forEach(function (t) {
+      trashFile_(t.fileId);
+      audit_(s.email, 'admin', 'ลบใบลงเวลา (ลบทั้งเดือน)', t.id, tsSummary_(t));
+    });
+    deleteObjs_(SCHEMA.TIMESHEETS, list);
+    audit_(s.email, 'admin', 'ลบใบลงเวลาทั้งเดือน', '', periodLabel_(period) + ' จำนวน ' + list.length + ' ไฟล์');
+    return { deleted: list.length };
+  });
+}
+
 /* ---------- จัดการพนักงาน ---------- */
 
 /** หน้าเว็บเรียก: รายชื่อพนักงาน */
@@ -1019,6 +1091,8 @@ function apiFunctions_() {
     adm_getFile: adm_getFile,
     adm_reply: adm_reply,
     adm_uploadTimesheet: adm_uploadTimesheet,
+    adm_deleteTimesheet: adm_deleteTimesheet,
+    adm_deletePeriod: adm_deletePeriod,
     adm_listEmployees: adm_listEmployees,
     adm_addEmployee: adm_addEmployee,
     adm_updateEmployee: adm_updateEmployee,

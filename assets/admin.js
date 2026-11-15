@@ -172,7 +172,11 @@ var AdminApp = (function () {
         el('thead', {}, el('tr', {},
           el('th', { text: 'พนักงาน' }), el('th', { text: 'สถานะ' }), el('th', { text: 'ฉบับ' }),
           el('th', { text: 'การเปิดดู' }), el('th', { text: 'เวลาที่ยืนยัน' }), el('th'))),
-        tbody))));
+        tbody)),
+      d.rows.some(function (r) { return r.timesheet; })
+        ? el('div', { class: 'row', style: 'justify-content:flex-end;margin-top:12px' },
+          el('button', { class: 'btn btn-sm btn-danger', text: '🗑 ลบใบลงเวลาทั้งเดือนนี้', onclick: function () { deletePeriod(d); } }))
+        : null));
     drawRows();
   }
 
@@ -270,7 +274,9 @@ var AdminApp = (function () {
         el('div', { class: 'section-title' }, el('h3', { style: 'margin:0', text: 'ไฟล์' }), el('div', { class: 'spacer' }), dl),
         viewer),
       el('div', {},
-        el('div', { class: 'card' }, info, confirmProof),
+        el('div', { class: 'card' }, info, confirmProof,
+          el('div', { class: 'row', style: 'justify-content:flex-end;margin-top:12px' },
+            el('button', { class: 'btn btn-sm btn-danger', text: '🗑 ลบฉบับนี้', onclick: function () { deleteTimesheet(t, d.versions, m); } }))),
         msgCard, verCard, auditCard)));
 
     Core.api('adm_getFile', t.id).then(function (data) {
@@ -280,6 +286,54 @@ var AdminApp = (function () {
     }).catch(function (e) {
       Core.clear(viewer).appendChild(el('div', { class: 'viewer-empty', text: 'เปิดไฟล์ไม่สำเร็จ: ' + Core.errMsg(e) }));
     });
+  }
+
+  function deleteTimesheet(t, versions, m) {
+    var older = versions.filter(function (v) { return v.id !== t.id && v.version < t.version; }).length;
+    var isCurrent = t.status !== 'ถูกแทนที่';
+    var notes = [];
+    notes.push('ไฟล์จะถูกย้ายไปถังขยะของ Google Drive (กู้คืนได้ภายใน 30 วัน) และข้อความแก้ไขของฉบับนี้จะถูกลบ');
+    if (isCurrent && older) notes.push('ฉบับก่อนหน้าจะกลับมาเป็นฉบับปัจจุบันที่พนักงานเห็น');
+    if (isCurrent && !older) notes.push('พนักงานจะไม่เห็นใบลงเวลาเดือนนี้อีก จนกว่าจะอัปโหลดใหม่');
+    Core.confirmDialog({
+      title: 'ลบใบลงเวลา',
+      danger: true,
+      okText: 'ลบฉบับนี้',
+      message: el('div', { class: 'stack' },
+        el('p', { style: 'margin:0' }, 'ลบใบลงเวลา ', el('b', { text: t.employeeName + ' · ' + t.periodLabel + ' ฉบับที่ ' + t.version }), ' ?'),
+        t.status === 'ยืนยันแล้ว' ? el('div', { class: 'callout callout-bad small', text: 'ฉบับนี้พนักงานยืนยันแล้ว — หลักฐานการยืนยันจะถูกลบจากชีตใบลงเวลา (ยังมีบันทึกไว้ในชีต "บันทึกกิจกรรม")' }) : null,
+        el('ul', { class: 'small muted', style: 'margin:0;padding-left:20px' }, notes.map(function (n) { return el('li', { text: n }); })))
+    }).then(function (ok) {
+      if (!ok) return;
+      Core.api('adm_deleteTimesheet', t.id).then(function (res) {
+        m.close();
+        Core.toast(res.restored ? 'ลบแล้ว · คืนฉบับที่ ' + res.restored.version + ' มาใช้' : 'ลบใบลงเวลาแล้ว', 'ok');
+        refreshDashSoon();
+      }).catch(function (e) { Core.toast(Core.errMsg(e), 'error'); });
+    });
+  }
+
+  function deletePeriod(d) {
+    var count = d.rows.filter(function (r) { return r.timesheet; }).length;
+    var input = el('input', { class: 'input', placeholder: 'พิมพ์คำว่า ลบ' });
+    var ok = el('button', { class: 'btn btn-danger', text: 'ลบทั้งเดือน', disabled: true });
+    var cancel = el('button', { class: 'btn', text: 'ยกเลิก' });
+    var m = Core.modal({ title: 'ลบใบลงเวลาทั้งเดือน ' + d.periodLabel, body: el('div', { class: 'stack' },
+      el('p', { style: 'margin:0' }, 'จะลบใบลงเวลา', el('b', { text: 'ทุกคนและทุกฉบับ' }), 'ของเดือน ', el('b', { text: d.periodLabel }), ' (พนักงาน ' + count + ' คน) รวมถึงการยืนยันและข้อความแก้ไขของเดือนนี้'),
+      el('p', { class: 'small muted', style: 'margin:0', text: 'ไฟล์จะถูกย้ายไปถังขยะของ Google Drive (กู้คืนได้ภายใน 30 วัน) · เดือนอื่นไม่ได้รับผลกระทบ · ใช้สำหรับล้างข้อมูลทดลองหรืออัปโหลดผิดทั้งชุด' }),
+      el('label', { class: 'field' }, el('span', { text: 'พิมพ์คำว่า "ลบ" เพื่อยืนยัน' }), input),
+      el('div', { class: 'row', style: 'justify-content:flex-end' }, cancel, ok)) });
+    input.addEventListener('input', function () { ok.disabled = input.value.trim() !== 'ลบ'; });
+    cancel.addEventListener('click', m.close);
+    ok.addEventListener('click', function () {
+      Core.busy(ok, true, 'กำลังลบ...');
+      Core.api('adm_deletePeriod', d.period).then(function (res) {
+        m.close();
+        Core.toast('ลบใบลงเวลาเดือน ' + d.periodLabel + ' แล้ว ' + res.deleted + ' ไฟล์', 'ok');
+        refreshDashSoon();
+      }).catch(function (e) { Core.busy(ok, false); Core.toast(Core.errMsg(e), 'error'); });
+    });
+    input.focus();
   }
 
   function refreshDashSoon() {

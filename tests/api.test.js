@@ -158,4 +158,37 @@ expectErr('googleLogin', /ยืนยันบัญชี Google ไม่ส�
 expectErr('googleLogin', /ยืนยันบัญชี Google ไม่สำเร็จ/, 'h.unknown.s');
 expectErr('googleLogin', /ไม่ถูกต้อง/, 'not a jwt');
 
+// ---- ลบใบลงเวลา ----
+const pdfB = (t) => Buffer.from('%PDF ' + t).toString('base64');
+const upd = (v) => c('adm_uploadTimesheet', A, { employeeId: 'EMP002', period: '2026-12', fileName: v + '.pdf', mimeType: 'application/pdf', base64: pdfB(v) }).timesheet;
+const v1 = upd('v1');
+const Ey = login('somying@example.com', 'EMP002');
+c('emp_getFile', Ey, v1.id);
+c('emp_requestCorrection', Ey, v1.id, 'วันที่ 3 ผิด');
+const v2 = upd('v2-wrong-file');
+expectErr('adm_deleteTimesheet', /AUTH/, Ey, v2.id);
+// ลบฉบับที่แนบผิด -> ฉบับ 1 กลับมาเป็นปัจจุบัน (สถานะขอแก้ไขเหมือนเดิม)
+const del = c('adm_deleteTimesheet', A, v2.id);
+assert.equal(del.restored.version, 1); assert.equal(del.restored.status, 'ขอแก้ไข');
+assert(env.drive.files[Object.keys(env.drive.files).find(k => env.drive.files[k].blob.name === '2026-12_EMP002_v2.pdf')].trashed, 'file trashed');
+let mineY = c('emp_listMyTimesheets', Ey).timesheets.find(t => t.period === '2026-12');
+assert.equal(mineY.id, v1.id); assert.equal(mineY.messages.length, 1);
+expectErr('adm_deleteTimesheet', /ไม่พบ/, A, v2.id);
+// ฉบับใหม่ต่อจากนี้เป็นฉบับที่ 2
+assert.equal(upd('v2-ok').version, 2);
+// ลบฉบับเดียวที่เหลือของอีกคน
+const lone = c('adm_uploadTimesheet', A, { employeeId: '001', period: '2026-12', fileName: 'x.pdf', mimeType: 'application/pdf', base64: pdfB('x') }).timesheet;
+assert.equal(c('adm_deleteTimesheet', A, lone.id).restored, null);
+// ลบทั้งเดือน
+const before = c('adm_getDashboard', A, '2026-11').summary.confirmed;
+const dp = c('adm_deletePeriod', A, '2026-12');
+assert.equal(dp.deleted, 2);
+assert.equal(c('adm_getDashboard', A, '2026-12').summary.notUploaded, 2);
+assert.equal(c('adm_getDashboard', A, '2026-11').summary.confirmed, before, 'other months untouched');
+assert(!c('emp_listMyTimesheets', Ey).timesheets.some(t => t.period === '2026-12'));
+assert.equal(c('adm_deletePeriod', A, '2026-12').deleted, 0);
+expectErr('adm_deletePeriod', /AUTH/, Ey, '2026-11');
+const auditActs = Object.values(env.sheetsById)[0].sheets['บันทึกกิจกรรม'].rows.map(r => r[3]);
+assert(auditActs.includes('ลบใบลงเวลา') && auditActs.includes('ลบใบลงเวลาทั้งเดือน'));
+
 console.log('ALL API TESTS PASSED');
