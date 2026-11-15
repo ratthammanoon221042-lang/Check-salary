@@ -5,6 +5,6 @@
 window.APP_CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycby9ix0OPpR0PIKleaRRDZDWeZwxWDrBKP4cGbxFRaWyj3YzrZPCRoyxgz3uNvXeYakx/exec',
   // Client ID สำหรับปุ่ม "ลงชื่อเข้าใช้ด้วย Google" (ลงท้ายด้วย .apps.googleusercontent.com) — ดูวิธีสร้างใน README
-  GOOGLE_CLIENT_ID: 'วาง_Client_ID_ที่นี่',
+  GOOGLE_CLIENT_ID: '659411556631-72ccgmeohf6ur4eo1pm9fqlsdcro198p.apps.googleusercontent.com',
   APP_NAME: 'ระบบตรวจสอบใบลงเวลา'
 };
