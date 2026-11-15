@@ -118,4 +118,22 @@ const ping = JSON.parse(env.ctx.doGet().getContent());
 assert(ping.ok);
 const badReq = JSON.parse(env.ctx.doPost({ postData: { contents: 'not json' } }).getContent());
 assert.equal(badReq.ok, false);
+// ---- ล็อกอินด้วยบัญชี Google ----
+const CID = '123-abc.apps.googleusercontent.com';
+const exp = String(Math.floor(Date.now() / 1000) + 3600);
+const tok = (name, payload) => { const t = 'h.' + name + '.s'; env.googleTokens[t] = Object.assign({ aud: CID, iss: 'https://accounts.google.com', exp, email_verified: 'true' }, payload); return t; };
+expectErr('googleLogin', /GOOGLE_CLIENT_ID/, tok('a', { email: 'somying@example.com' }));
+env.props.GOOGLE_CLIENT_ID = CID;
+const g1 = c('googleLogin', tok('b', { email: 'Somying@Example.com' }));
+assert.equal(g1.user.role, 'employee'); assert.equal(g1.user.employeeId, 'EMP002');
+assert.equal(c('emp_listMyTimesheets', g1.token).profile.employeeId, 'EMP002');
+assert.equal(c('googleLogin', tok('adm', { email: 'owner@gmail.com' })).user.role, 'admin');
+expectErr('googleLogin', /Client ID ไม่ตรง/, tok('c', { email: 'somying@example.com', aud: 'other.apps.googleusercontent.com' }));
+expectErr('googleLogin', /ยังไม่ได้ยืนยันอีเมล/, tok('d', { email: 'somying@example.com', email_verified: 'false' }));
+expectErr('googleLogin', /หมดอายุ/, tok('e', { email: 'somying@example.com', exp: '1000' }));
+expectErr('googleLogin', /ยืนยันบัญชี Google ไม่สำเร็จ/, tok('f', { email: 'somying@example.com', iss: 'evil.com' }));
+expectErr('googleLogin', /ไม่อยู่ในรายชื่อ/, tok('g', { email: 'stranger@gmail.com' }));
+expectErr('googleLogin', /ยืนยันบัญชี Google ไม่สำเร็จ/, 'h.unknown.s');
+expectErr('googleLogin', /ไม่ถูกต้อง/, 'not a jwt');
+
 console.log('ALL API TESTS PASSED');

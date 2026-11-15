@@ -39,6 +39,7 @@ var Core = (function () {
 
   /* ---------- API ---------- */
   var CONFIG = window.APP_CONFIG || {};
+  function googleClientId() { var c = String(CONFIG.GOOGLE_CLIENT_ID || '').trim(); return /\.apps\.googleusercontent\.com$/.test(c) ? c : ''; }
   function apiConfigured() { return /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(String(CONFIG.API_URL || '').trim()); }
 
   /** ส่งคำขอไปที่ Apps Script (Content-Type text/plain เพื่อเลี่ยง CORS preflight) */
@@ -256,7 +257,7 @@ var Core = (function () {
   }
 
   return {
-    el: el, clear: clear, store: store, api: api, apiRaw: apiRaw, apiConfigured: apiConfigured, errMsg: errMsg, toast: toast,
+    el: el, clear: clear, store: store, api: api, apiRaw: apiRaw, apiConfigured: apiConfigured, googleClientId: googleClientId, errMsg: errMsg, toast: toast,
     modal: modal, confirmDialog: confirmDialog, busy: busy, loading: loading,
     fmt: fmt, fmtShort: fmtShort, periodLabel: periodLabel, currentPeriod: currentPeriod, shiftPeriod: shiftPeriod,
     badge: badge, renderFile: renderFile, downloadFile: downloadFile, thread: thread, topbar: topbar
@@ -307,6 +308,7 @@ var App = (function () {
     self.user = null;
     Core.store.del(TOKEN_KEY);
     if (t) Core.apiRaw('logout', t).catch(function () {});
+    try { if (window.google && google.accounts) google.accounts.id.disableAutoSelect(); } catch (e) {}
     document.querySelectorAll('.modal-back').forEach(function (n) { n.remove(); });
     showLogin();
     if (!silent) Core.toast('ออกจากระบบแล้ว');
@@ -381,21 +383,85 @@ var App = (function () {
       Core.busy(verifyBtn, true, 'กำลังตรวจสอบ...');
       Core.apiRaw('verifyOtp', sentTo.textContent, code).then(function (res) {
         clearInterval(timer);
-        self.token = res.token;
-        Core.store.set(TOKEN_KEY, res.token);
-        route(res.user);
+        loggedIn(res);
       }).catch(function (e2) {
         Core.busy(verifyBtn, false);
         errBox.textContent = Core.errMsg(e2);
       });
     });
 
+    function loggedIn(res) {
+      self.token = res.token;
+      Core.store.set(TOKEN_KEY, res.token);
+      route(res.user);
+    }
+
+    // ---- ล็อกอินด้วยบัญชี Google (วิธีหลัก) ----
+    var clientId = Core.googleClientId();
+    var gBox = el('div', { class: 'google-box' });
+    var gStatus = el('div', { class: 'hint', style: 'text-align:center' });
+    var otpToggle = el('button', { class: 'linkbtn small', type: 'button', text: 'ไม่มีบัญชี Google? เข้าสู่ระบบด้วยรหัสทางอีเมล' });
+    var otpWrap = el('div', {}, stage1, stage2);
+    var googleWrap = el('div', { class: 'stack' }, gBox, gStatus,
+      el('div', { style: 'text-align:center;margin-top:18px' }, otpToggle));
+
+    function onCredential(resp) {
+      errBox.textContent = '';
+      gStatus.textContent = 'กำลังเข้าสู่ระบบ...';
+      Core.apiRaw('googleLogin', resp.credential).then(loggedIn).catch(function (e) {
+        gStatus.textContent = '';
+        errBox.textContent = Core.errMsg(e);
+      });
+    }
+
+    function showOtp() {
+      googleWrap.classList.add('hidden');
+      otpWrap.classList.remove('hidden');
+      if (clientId) otpWrap.appendChild(el('div', { style: 'text-align:center;margin-top:14px' },
+        el('button', { class: 'linkbtn small', type: 'button', text: '← กลับไปใช้บัญชี Google', onclick: function () {
+          otpWrap.classList.add('hidden'); googleWrap.classList.remove('hidden'); errBox.textContent = '';
+          this.parentNode.remove();
+        } })));
+      emailInput.focus();
+    }
+    otpToggle.addEventListener('click', showOtp);
+
+    if (clientId) {
+      otpWrap.classList.add('hidden');
+      gBox.appendChild(Core.loading('กำลังโหลด...'));
+      loadGoogle().then(function () {
+        google.accounts.id.initialize({ client_id: clientId, callback: onCredential, ux_mode: 'popup', auto_select: false, context: 'signin' });
+        Core.clear(gBox);
+        google.accounts.id.renderButton(gBox, { type: 'standard', theme: 'filled_blue', size: 'large', text: 'signin_with', shape: 'pill', locale: 'th', width: Math.min(340, Math.max(220, gBox.clientWidth || 300)) });
+        gStatus.textContent = 'กดปุ่มด้านบน แล้วเลือกบัญชี Google ที่แจ้งไว้กับบริษัท';
+      }).catch(function () {
+        Core.clear(gBox);
+        showOtp();
+        errBox.textContent = 'โหลดปุ่มล็อกอินด้วย Google ไม่สำเร็จ ใช้รหัสทางอีเมลแทนได้';
+      });
+    }
+
     r.appendChild(el('div', { class: 'login-wrap' },
       el('div', { class: 'card login-card' },
         el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '✓' }), self.name),
         el('p', { class: 'muted', style: 'text-align:center;margin:0 0 18px', text: 'ตรวจสอบและยืนยันใบลงเวลาของคุณ' }),
-        stage1, stage2, errBox)));
-    emailInput.focus();
+        clientId ? googleWrap : null, otpWrap, errBox)));
+    if (!clientId) emailInput.focus();
+  }
+
+  var googleLoader = null;
+  function loadGoogle() {
+    if (window.google && google.accounts && google.accounts.id) return Promise.resolve();
+    if (googleLoader) return googleLoader;
+    googleLoader = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = 'https://accounts.google.com/gsi/client';
+      s.async = true;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { googleLoader = null; reject(new Error('load failed')); };
+      document.head.appendChild(s);
+    });
+    return googleLoader;
   }
 
   return self;

@@ -263,4 +263,5 @@
   .page-card.unassigned { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
   .page-thumb { background: #fff; border-radius: 6px; min-height: 160px; display: grid; place-items: center; cursor: zoom-in; overflow: hidden; border: 1px solid var(--border); }
   .page-thumb canvas { display: block; width: 100%; height: auto; }
+  .google-box { display: flex; justify-content: center; min-height: 44px; }
   .hidden { display: none !important; }

@@ -88,6 +88,7 @@ function createEnv(opts) {
     createFile(blob) { return new File(blob); }
   }
 
+  const googleTokens = {}; // id_token -> tokeninfo payload (จำลอง Google)
   const ctx = {
     console,
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); } }) },
@@ -125,6 +126,13 @@ function createEnv(opts) {
         return fmt.replace('yyyy', g('year')).replace('MM', g('month')).replace('dd', g('day')).replace('HH', g('hour')).replace('mm', g('minute')).replace('ss', g('second'));
       }
     },
+    UrlFetchApp: {
+      fetch: url => {
+        const m = String(url).match(/id_token=([^&]+)/);
+        const info = m && googleTokens[decodeURIComponent(m[1])];
+        return { getResponseCode: () => (info ? 200 : 400), getContentText: () => JSON.stringify(info || { error: 'invalid_token' }) };
+      }
+    },
     ContentService: {
       MimeType: { JSON: 'application/json' },
       createTextOutput: t => ({ setMimeType() { return this; }, getContent: () => t })
@@ -143,7 +151,7 @@ function createEnv(opts) {
     if (!res.ok) throw new Error(res.error);
     return res.result;
   }
-  return { ctx, call, mails, props, sheetsById, drive };
+  return { ctx, call, mails, props, sheetsById, drive, googleTokens };
 }
 
 module.exports = { createEnv };

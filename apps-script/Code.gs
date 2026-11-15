@@ -426,10 +426,41 @@ function verifyOtp(email, code) {
 
   const role = roleForEmail_(email);
   if (!role) throw new Error('ไม่พบอีเมลนี้ในรายชื่อพนักงาน');
+  return createSession_(email, role, 'เข้าสู่ระบบ (รหัส OTP)');
+}
+
+function createSession_(email, role, how) {
   const token = Utilities.getUuid() + Utilities.getUuid().replace(/-/g, '');
-  cache.put('sess_' + token, JSON.stringify({ email: email, role: role }), SESSION_TTL_SEC);
-  audit_(email, role, 'เข้าสู่ระบบ', '', '');
+  CacheService.getScriptCache().put('sess_' + token, JSON.stringify({ email: email, role: role }), SESSION_TTL_SEC);
+  audit_(email, role, how, '', '');
   return { token: token, user: sessionInfo_(email, role) };
+}
+
+/** Client ID ของ Google Sign-In ตั้งค่าที่ Project Settings → Script Properties → GOOGLE_CLIENT_ID */
+function googleClientId_() {
+  return String(PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID') || '').trim();
+}
+
+/** หน้าเว็บเรียก: ล็อกอินด้วยบัญชี Google (ส่ง ID token ที่ได้จากปุ่ม Sign in with Google มา) */
+function googleLogin(idToken) {
+  const clientId = googleClientId_();
+  if (!clientId) throw new Error('ผู้ดูแลยังไม่ได้ตั้งค่า GOOGLE_CLIENT_ID ใน Apps Script (Project Settings → Script Properties)');
+  idToken = String(idToken || '');
+  if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(idToken)) throw new Error('ข้อมูลการล็อกอินไม่ถูกต้อง กรุณาลองใหม่');
+
+  // ให้ Google ตรวจลายเซ็นและอายุของ token
+  const res = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken), { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error('ยืนยันบัญชี Google ไม่สำเร็จ กรุณาลองใหม่');
+  const info = JSON.parse(res.getContentText());
+  if (info.aud !== clientId) throw new Error('ยืนยันบัญชี Google ไม่สำเร็จ (Client ID ไม่ตรงกัน)');
+  if (info.iss !== 'accounts.google.com' && info.iss !== 'https://accounts.google.com') throw new Error('ยืนยันบัญชี Google ไม่สำเร็จ');
+  if (Number(info.exp) * 1000 < Date.now()) throw new Error('การล็อกอินหมดอายุ กรุณาลองใหม่');
+  if (String(info.email_verified) !== 'true') throw new Error('บัญชี Google นี้ยังไม่ได้ยืนยันอีเมล');
+
+  const email = normEmail_(info.email);
+  const role = roleForEmail_(email);
+  if (!role) throw new Error('บัญชี ' + email + ' ไม่อยู่ในรายชื่อพนักงาน — ถ้ามีหลายบัญชี ให้เลือกบัญชีที่แจ้งไว้กับบริษัท หรือติดต่อผู้ดูแลระบบ');
+  return createSession_(email, role, 'เข้าสู่ระบบ (บัญชี Google)');
 }
 
 function sessionInfo_(email, role) {
@@ -958,6 +989,7 @@ function apiFunctions_() {
   return {
     requestOtp: requestOtp,
     verifyOtp: verifyOtp,
+    googleLogin: googleLogin,
     getSession: getSession,
     logout: logout,
     emp_listMyTimesheets: emp_listMyTimesheets,
@@ -1011,5 +1043,8 @@ function setup() {
   console.log('ฐานข้อมูล Google Sheet: ' + ss.getUrl());
   console.log('โฟลเดอร์เก็บไฟล์: ' + folder.getUrl());
   console.log('อีเมลผู้ดูแลระบบ: ' + adminEmail_());
+  console.log('GOOGLE_CLIENT_ID: ' + (googleClientId_() || 'ยังไม่ได้ตั้งค่า (ต้องตั้งถ้าจะใช้ปุ่มล็อกอินด้วย Google)'));
+  // เรียกครั้งเดียวเพื่อให้ Google ขอสิทธิ์เชื่อมต่อภายนอก (ใช้ตรวจการล็อกอินด้วย Google)
+  UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo', { muteHttpExceptions: true });
   console.log('ส่งอีเมลได้อีกวันนี้: ' + MailApp.getRemainingDailyQuota() + ' ฉบับ');
 }
