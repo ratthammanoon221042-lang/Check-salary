@@ -1,7 +1,7 @@
 // ทดสอบฝั่งเซิร์ฟเวอร์ด้วย mock ของ Apps Script: node tests/api.test.js
 const assert = require('assert');
 const { createEnv } = require('./gasmock');
-const env = createEnv({ srcDir: require('path').join(__dirname, '..', 'src'), ownerEmail: 'owner@gmail.com' });
+const env = createEnv({ srcDir: require('path').join(__dirname, '..', 'apps-script'), ownerEmail: 'owner@gmail.com' });
 const c = (fn, ...a) => env.call(fn, a);
 const expectErr = (fn, re, ...a) => { try { c(fn, ...a); } catch (e) { assert(re.test(e.message), fn + ': ' + e.message); return e.message; } throw new Error(fn + ' should fail'); };
 const lastCode = () => env.mails[env.mails.length - 1].subject.match(/\d{6}/)[0];
@@ -108,8 +108,14 @@ expectErr('verifyOtp', /หลายครั้ง/, 'somying@example.com', bad
 expectErr('verifyOtp', /หมดอายุ|หลายครั้ง/, 'somying@example.com', good);
 
 // private functions not callable
-expectErr('readAll_', /not found/);
+expectErr('readAll_', /ไม่รู้จักคำสั่ง/);
+expectErr('setup_', /ไม่รู้จักคำสั่ง/);
 // period stored as text
 const ss = Object.values(env.sheetsById)[0];
 console.log('sheets:', Object.keys(ss.sheets).join(', '));
+assert.equal(ss.tz, 'Asia/Bangkok');
+const ping = JSON.parse(env.ctx.doGet().getContent());
+assert(ping.ok);
+const badReq = JSON.parse(env.ctx.doPost({ postData: { contents: 'not json' } }).getContent());
+assert.equal(badReq.ok, false);
 console.log('ALL API TESTS PASSED');

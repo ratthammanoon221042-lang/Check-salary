@@ -58,6 +58,7 @@ function createEnv(opts) {
   }
   class Spreadsheet {
     constructor() { this.id = 'SS' + crypto.randomUUID().slice(0, 8); this.sheets = {}; sheetsById[this.id] = this; }
+    setSpreadsheetTimeZone(tz) { this.tz = tz; }
     getId() { return this.id; }
     getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.id; }
     getSheetByName(n) { return this.sheets[n] || null; }
@@ -124,19 +125,23 @@ function createEnv(opts) {
         return fmt.replace('yyyy', g('year')).replace('MM', g('month')).replace('dd', g('day')).replace('HH', g('hour')).replace('mm', g('minute')).replace('ss', g('second'));
       }
     },
-    HtmlService: {}
+    ContentService: {
+      MimeType: { JSON: 'application/json' },
+      createTextOutput: t => ({ setMimeType() { return this; }, getContent: () => t })
+    }
   };
   vm.createContext(ctx);
   const dir = opts.srcDir;
-  const code = fs.readdirSync(dir).filter(f => f.endsWith('.gs')).sort((a, b) => (a === 'Config.gs' ? -1 : b === 'Config.gs' ? 1 : a.localeCompare(b)))
+  const code = fs.readdirSync(dir).filter(f => f.endsWith('.gs')).sort()
     .map(f => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n;\n');
   vm.runInContext(code, ctx, { filename: 'gas-bundle.js' });
 
+  // เรียกผ่าน doPost เหมือนที่หน้าเว็บเรียกจริง (setup เรียกตรง)
   function call(fn, args) {
-    if (typeof ctx[fn] !== 'function' || /_$/.test(fn)) throw new Error('Script function not found: ' + fn);
-    // emulate google.script.run serialization
-    const res = ctx[fn].apply(null, JSON.parse(JSON.stringify(args)));
-    return res === undefined ? null : JSON.parse(JSON.stringify(res));
+    if (fn === 'setup') return ctx.setup();
+    const res = JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify({ fn, args }) } }).getContent());
+    if (!res.ok) throw new Error(res.error);
+    return res.result;
   }
   return { ctx, call, mails, props, sheetsById, drive };
 }

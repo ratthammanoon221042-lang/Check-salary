@@ -1,4 +1,3 @@
-<script>
 /* =========================================================
  * ส่วนกลางของหน้าเว็บ: ตัวช่วยสร้าง DOM, เรียก API, ล็อกอิน
  * ========================================================= */
@@ -39,13 +38,29 @@ var Core = (function () {
   };
 
   /* ---------- API ---------- */
+  var CONFIG = window.APP_CONFIG || {};
+  function apiConfigured() { return /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(String(CONFIG.API_URL || '').trim()); }
+
+  /** ส่งคำขอไปที่ Apps Script (Content-Type text/plain เพื่อเลี่ยง CORS preflight) */
   function apiRaw(fn) {
     var args = Array.prototype.slice.call(arguments, 1);
-    return new Promise(function (resolve, reject) {
-      var r = google.script.run
-        .withSuccessHandler(resolve)
-        .withFailureHandler(function (err) { reject(err); });
-      r[fn].apply(r, args);
+    if (!apiConfigured()) return Promise.reject(new Error('ยังไม่ได้ตั้งค่า API_URL ในไฟล์ config.js'));
+    return fetch(String(CONFIG.API_URL).trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ fn: fn, args: args }),
+      redirect: 'follow'
+    }).catch(function () {
+      throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ต แล้วลองใหม่');
+    }).then(function (res) {
+      return res.text().then(function (txt) {
+        var j;
+        try { j = JSON.parse(txt); } catch (e) {
+          throw new Error('เซิร์ฟเวอร์ตอบกลับผิดรูปแบบ — ตรวจสอบว่า Deploy แบบ "Who has access: Anyone" และ API_URL ถูกต้อง');
+        }
+        if (!j.ok) throw new Error(j.error || 'เกิดข้อผิดพลาด');
+        return j.result;
+      });
     });
   }
   /** เรียก API ที่ต้องล็อกอิน (ใส่ token ให้อัตโนมัติ) */
@@ -241,7 +256,7 @@ var Core = (function () {
   }
 
   return {
-    el: el, clear: clear, store: store, api: api, apiRaw: apiRaw, errMsg: errMsg, toast: toast,
+    el: el, clear: clear, store: store, api: api, apiRaw: apiRaw, apiConfigured: apiConfigured, errMsg: errMsg, toast: toast,
     modal: modal, confirmDialog: confirmDialog, busy: busy, loading: loading,
     fmt: fmt, fmtShort: fmtShort, periodLabel: periodLabel, currentPeriod: currentPeriod, shiftPeriod: shiftPeriod,
     badge: badge, renderFile: renderFile, downloadFile: downloadFile, thread: thread, topbar: topbar
@@ -254,11 +269,13 @@ var Core = (function () {
 var App = (function () {
   var el = Core.el;
   var TOKEN_KEY = 'tsc_token', EMAIL_KEY = 'tsc_email';
-  var self = { token: null, user: null, name: document.body.getAttribute('data-app-name') || 'ระบบตรวจสอบใบลงเวลา' };
+  var self = { token: null, user: null, name: (window.APP_CONFIG && window.APP_CONFIG.APP_NAME) || 'ระบบตรวจสอบใบลงเวลา' };
 
   function root() { return Core.clear(document.getElementById('app')); }
 
   self.start = function () {
+    document.title = self.name;
+    if (!Core.apiConfigured()) return showNotConfigured();
     var t = Core.store.get(TOKEN_KEY);
     if (!t) return showLogin();
     Core.apiRaw('getSession', t).then(function (user) {
@@ -267,6 +284,15 @@ var App = (function () {
       route(user);
     }).catch(function () { showLogin(); });
   };
+
+  function showNotConfigured() {
+    root().appendChild(el('div', { class: 'login-wrap' },
+      el('div', { class: 'card login-card' },
+        el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '✓' }), self.name),
+        el('div', { class: 'callout callout-warn', style: 'margin-top:12px' },
+          el('b', { text: 'ยังไม่ได้เชื่อมต่อฐานข้อมูล' }), el('br'),
+          'กรุณาแก้ไฟล์ config.js ใน GitHub แล้วใส่ URL ของ Apps Script Web app (ลงท้ายด้วย /exec) ที่ API_URL ตามขั้นตอนใน README'))));
+  }
 
   function route(user) {
     self.user = user;
@@ -374,4 +400,3 @@ var App = (function () {
 
   return self;
 })();
-</script>
