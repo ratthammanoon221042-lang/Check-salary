@@ -6,6 +6,8 @@ var AdminApp = (function () {
   var state = {
     user: null,
     tab: 'dashboard',
+    uploadMode: 'split',
+    split: null,
     period: Core.currentPeriod(),
     dash: null,
     filter: 'all',
@@ -341,14 +343,25 @@ var AdminApp = (function () {
     });
   }
 
+  function modeToggle() {
+    function chip(mode, label) {
+      return el('button', { class: 'chip' + (state.uploadMode === mode ? ' active' : ''), onclick: function () { state.uploadMode = mode; Upload(); } }, label);
+    }
+    return el('div', { class: 'chips', style: 'margin-bottom:14px' },
+      chip('split', 'PDF รวมหลายคน (แยกให้อัตโนมัติ)'),
+      chip('separate', 'ไฟล์แยกรายคนอยู่แล้ว'));
+  }
+
   function Upload() {
     Core.clear(main);
+    if (state.uploadMode === 'split') return SplitUpload();
     var items = []; // {file, employeeId, status, msg}
     var emps = [];
     var current = {}; // employeeId -> status เดิมในรอบนี้
 
     var head = el('div', { class: 'section-title' }, el('h2', { style: 'font-size:19px', text: 'อัปโหลดใบลงเวลา' }), el('div', { class: 'spacer' }), periodPicker(function () { Upload(); }));
     main.appendChild(head);
+    main.appendChild(modeToggle());
 
     var fileInput = el('input', { type: 'file', multiple: true, accept: ACCEPT.join(','), class: 'hidden' });
     var drop = el('div', { class: 'dropzone' },
@@ -471,6 +484,354 @@ var AdminApp = (function () {
         });
       });
     });
+  }
+
+  /* ======================= แยก PDF รวมหลายคน ======================= */
+  var PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  var PDFLIB_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+  var SKIP = '__skip';
+  var loadedScripts = {};
+
+  function loadScript(url) {
+    if (loadedScripts[url]) return loadedScripts[url];
+    loadedScripts[url] = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = url;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { delete loadedScripts[url]; reject(new Error('โหลดตัวแยกไฟล์ PDF ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต')); };
+      document.head.appendChild(s);
+    });
+    return loadedScripts[url];
+  }
+
+  function bytesToB64(bytes) {
+    var bin = '', chunk = 0x8000;
+    for (var i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return btoa(bin);
+  }
+
+  var NAME_TITLES = /^(นางสาว|นาย|นาง|น\.ส\.|นส\.|ด\.ช\.|ด\.ญ\.|mrs\.?|mr\.?|ms\.?|miss)\s*/i;
+  function normText(s) {
+    return String(s || '').normalize('NFC')
+      .replace(/ํา/g, 'ำ')            // ํ + า → ำ (PDF บางไฟล์แยกสระอำ)
+      .replace(/[​-‍﻿]/g, '')
+      .toLowerCase();
+  }
+  function compactText(s) { return normText(s).replace(/\s+/g, ''); }
+  function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  /** หาว่าหน้านี้เป็นของพนักงานคนไหน จากรหัสพนักงานหรือชื่อ-นามสกุลในข้อความของหน้า */
+  function detectEmployee(text, emps) {
+    var flat = normText(text), comp = compactText(text);
+    var hits = [];
+    emps.forEach(function (e) {
+      var score = 0, by = [];
+      var id = normText(e.employeeId);
+      if (id && new RegExp('(^|[^a-z0-9])' + escRe(id) + '($|[^a-z0-9])').test(flat)) { score += 1; by.push('รหัส'); }
+      var nm = compactText(String(e.name || '').replace(NAME_TITLES, ''));
+      if (nm.length >= 4 && comp.indexOf(nm) >= 0) { score += 2 + nm.length / 1000; by.push('ชื่อ'); }
+      if (score) hits.push({ e: e, score: score, by: by.join('+') });
+    });
+    if (!hits.length) return null;
+    hits.sort(function (a, b) { return b.score - a.score; });
+    if (hits.length > 1 && hits[1].score === hits[0].score) {
+      return { ambiguous: true, candidates: hits.filter(function (h) { return h.score === hits[0].score; }).map(function (h) { return h.e.name; }) };
+    }
+    return { employeeId: hits[0].e.employeeId, by: hits[0].by };
+  }
+
+  /** คำนวณว่าแต่ละหน้าเป็นของใคร: เลือกเอง > ระบบเจอ > ต่อจากหน้าก่อน */
+  function resolvePages(pages) {
+    var prev = '';
+    pages.forEach(function (p) {
+      if (p.manual !== undefined) { p.assigned = p.manual; p.how = 'manual'; }
+      else if (p.auto && p.auto.employeeId) { p.assigned = p.auto.employeeId; p.how = 'auto'; }
+      else if (p.auto && p.auto.ambiguous) { p.assigned = ''; p.how = 'ambiguous'; }
+      else if (prev) { p.assigned = prev; p.how = 'inherit'; }
+      else { p.assigned = ''; p.how = 'none'; }
+      prev = p.assigned && p.assigned !== SKIP ? p.assigned : '';
+    });
+  }
+
+  function pageRanges(nums) {
+    var out = [], start = null, last = null;
+    nums.forEach(function (n) {
+      if (start === null) { start = last = n; return; }
+      if (n === last + 1) { last = n; return; }
+      out.push(start === last ? String(start) : start + '–' + last);
+      start = last = n;
+    });
+    if (start !== null) out.push(start === last ? String(start) : start + '–' + last);
+    return out.join(', ');
+  }
+
+  function SplitUpload() {
+    Core.clear(main);
+    main.appendChild(el('div', { class: 'section-title' }, el('h2', { style: 'font-size:19px', text: 'อัปโหลดใบลงเวลา' }), el('div', { class: 'spacer' }), periodPicker(function () { Upload(); })));
+    main.appendChild(modeToggle());
+
+    var emps = [], current = {};
+    var empById = {};
+    var sp = state.split; // { fileName, bytes, pdf, pages, groups status }
+
+    var fileInput = el('input', { type: 'file', accept: 'application/pdf', class: 'hidden' });
+    var drop = el('div', { class: 'dropzone' },
+      el('div', { style: 'font-weight:600;font-size:16px', text: sp ? 'เลือกไฟล์ PDF รวมไฟล์ใหม่' : 'ลากไฟล์ PDF รวมมาวาง หรือคลิกเพื่อเลือกไฟล์' }),
+      el('div', { class: 'hint', style: 'margin-top:6px', text: 'ระบบจะอ่านรหัสพนักงานหรือชื่อ-นามสกุลในแต่ละหน้า แล้วแยกเป็นไฟล์ของแต่ละคนให้' }),
+      el('div', { class: 'hint', text: 'หน้าที่ไม่พบชื่อ จะถือว่าเป็นหน้าต่อของคนก่อนหน้า · ตรวจสอบและแก้ได้ก่อนอัปโหลด' }),
+      fileInput);
+    drop.addEventListener('click', function () { fileInput.click(); });
+    drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('drag'); });
+    drop.addEventListener('dragleave', function () { drop.classList.remove('drag'); });
+    drop.addEventListener('drop', function (e) { e.preventDefault(); drop.classList.remove('drag'); if (e.dataTransfer.files[0]) openPdf(e.dataTransfer.files[0]); });
+    fileInput.addEventListener('change', function () { if (fileInput.files[0]) openPdf(fileInput.files[0]); fileInput.value = ''; });
+
+    var info = el('div', { class: 'muted small', style: 'margin-top:10px' }, Core.loading('กำลังโหลดรายชื่อพนักงาน...'));
+    main.appendChild(el('div', { class: 'card' }, drop, info));
+    var summaryCard = el('div', { class: 'card hidden' });
+    var pagesCard = el('div', { class: 'card hidden' });
+    main.appendChild(summaryCard);
+    main.appendChild(pagesCard);
+
+    var ready = Promise.all([Core.api('adm_listEmployees'), loadDash()]).then(function (res) {
+      emps = res[0];
+      emps.forEach(function (e) { empById[e.employeeId] = e; });
+      current = {};
+      res[1].rows.forEach(function (r) { if (r.timesheet) current[r.employee.employeeId] = r.timesheet.status; });
+      Core.clear(info).appendChild(document.createTextNode('พนักงาน ' + emps.length + ' คน · อัปโหลดแล้วในเดือน ' + Core.periodLabel(state.period) + ' ' + Object.keys(current).length + ' คน'));
+      if (sp) { sp.pages.forEach(function (p) { p.auto = detectEmployee(p.text, emps); }); drawAll(); }
+    }).catch(function (e) { Core.clear(info).appendChild(el('span', { style: 'color:var(--bad)', text: Core.errMsg(e) })); });
+
+    function openPdf(file) {
+      if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) { Core.toast('กรุณาเลือกไฟล์ PDF', 'error'); return; }
+      Core.clear(summaryCard).appendChild(Core.loading('กำลังอ่านไฟล์...'));
+      summaryCard.classList.remove('hidden');
+      pagesCard.classList.add('hidden');
+      var progress = summaryCard.querySelector('.loading-block div');
+      file.arrayBuffer().then(function (buf) {
+        var bytes = new Uint8Array(buf);
+        if (!window.pdfjsLib) throw new Error('โหลดตัวอ่าน PDF ไม่สำเร็จ กรุณารีเฟรชหน้า');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+        return Promise.all([ready, pdfjsLib.getDocument({ data: bytes.slice() }).promise]).then(function (r) {
+          var pdf = r[1];
+          var pages = [];
+          var chain = Promise.resolve();
+          for (var n = 1; n <= pdf.numPages; n++) {
+            (function (pageNo) {
+              chain = chain.then(function () {
+                progress.textContent = 'กำลังอ่านหน้า ' + pageNo + ' / ' + pdf.numPages;
+                return pdf.getPage(pageNo).then(function (page) {
+                  return page.getTextContent().then(function (tc) {
+                    var text = tc.items.map(function (it) { return it.str; }).join(' ');
+                    pages.push({ n: pageNo, text: text, auto: detectEmployee(text, emps) });
+                  });
+                });
+              });
+            })(n);
+          }
+          return chain.then(function () {
+            state.split = sp = { fileName: file.name, bytes: bytes, pdf: pdf, pages: pages, done: {} };
+            drawAll();
+          });
+        });
+      }).catch(function (e) {
+        Core.clear(summaryCard).appendChild(el('div', { class: 'callout callout-bad', text: 'อ่านไฟล์ไม่สำเร็จ: ' + Core.errMsg(e) }));
+      });
+    }
+
+    function groupsOf() {
+      var map = {}, order = [];
+      sp.pages.forEach(function (p) {
+        if (!p.assigned || p.assigned === SKIP) return;
+        if (!map[p.assigned]) { map[p.assigned] = []; order.push(p.assigned); }
+        map[p.assigned].push(p.n);
+      });
+      return order.map(function (id) { return { employeeId: id, pages: map[id] }; });
+    }
+
+    function drawAll() {
+      resolvePages(sp.pages);
+      drawSummary();
+      drawPages();
+    }
+
+    function drawSummary() {
+      Core.clear(summaryCard);
+      summaryCard.classList.remove('hidden');
+      var groups = groupsOf();
+      var unassigned = sp.pages.filter(function (p) { return !p.assigned; });
+      var textLen = sp.pages.reduce(function (a, p) { return a + p.text.trim().length; }, 0);
+      var found = {};
+      groups.forEach(function (g) { found[g.employeeId] = true; });
+      var missing = emps.filter(function (e) { return !found[e.employeeId]; });
+
+      summaryCard.appendChild(el('div', { class: 'section-title' },
+        el('h2', { text: sp.fileName }),
+        el('span', { class: 'muted', text: sp.pages.length + ' หน้า → ' + groups.length + ' คน' })));
+
+      if (textLen < 10 * sp.pages.length) {
+        summaryCard.appendChild(el('div', { class: 'callout callout-warn', style: 'margin-bottom:12px' },
+          el('b', { text: 'ไฟล์นี้น่าจะเป็นภาพสแกน ระบบอ่านชื่อในไฟล์ไม่ได้' }), el('br'),
+          'กรุณาเลือกพนักงานที่หน้าแรกของแต่ละคนด้านล่าง หน้าถัดไปที่ยังไม่ได้เลือกจะเป็นของคนเดียวกันอัตโนมัติ'));
+      }
+      if (unassigned.length) {
+        summaryCard.appendChild(el('div', { class: 'callout callout-bad', style: 'margin-bottom:12px' },
+          'ยังมี ', el('b', { text: unassigned.length + ' หน้า' }), ' ที่ไม่ได้ระบุพนักงาน (หน้า ' + pageRanges(unassigned.map(function (p) { return p.n; })) + ') — เลือกพนักงาน หรือเลือก "ไม่ใช้หน้านี้"'));
+      }
+
+      var rows = groups.map(function (g) {
+        var e = empById[g.employeeId] || { name: '?', employeeId: g.employeeId };
+        var st = sp.done[g.employeeId];
+        var stCell;
+        if (st === 'done') stCell = el('span', { class: 'badge b-confirmed', text: 'อัปโหลดแล้ว' });
+        else if (st === 'uploading') stCell = el('span', {}, el('span', { class: 'spinner', style: 'width:16px;height:16px;border-width:2px' }), ' กำลังอัปโหลด');
+        else if (st && st.error) stCell = el('span', { class: 'small', style: 'color:var(--bad)', text: 'ไม่สำเร็จ: ' + st.error });
+        else if (current[g.employeeId]) stCell = el('span', { class: 'small', style: 'color:var(--warn)', text: 'จะแทนที่ฉบับเดิม (' + current[g.employeeId] + ')' });
+        else stCell = el('span', { class: 'small muted', text: 'พร้อมอัปโหลด' });
+        return el('tr', {},
+          el('td', {}, el('div', { style: 'font-weight:600', text: e.name }), el('div', { class: 'muted small', text: e.employeeId })),
+          el('td', { class: 'nowrap', text: 'หน้า ' + pageRanges(g.pages) + ' (' + g.pages.length + ' หน้า)' }),
+          el('td', {}, stCell));
+      });
+
+      var todo = groups.filter(function (g) { return sp.done[g.employeeId] !== 'done'; });
+      var busyNow = groups.some(function (g) { return sp.done[g.employeeId] === 'uploading'; });
+      var goBtn = el('button', { class: 'btn btn-primary', text: todo.length ? 'แยกไฟล์และอัปโหลด ' + todo.length + ' คน' : 'อัปโหลดครบแล้ว', disabled: !todo.length || !!unassigned.length || busyNow });
+      goBtn.addEventListener('click', function () { uploadGroups(todo); });
+      var resetBtn = el('button', { class: 'btn', text: 'ล้างไฟล์', disabled: busyNow, onclick: function () { state.split = null; Upload(); } });
+
+      summaryCard.appendChild(el('div', { class: 'table-wrap' }, el('table', { class: 'table' },
+        el('thead', {}, el('tr', {}, el('th', { text: 'พนักงาน' }), el('th', { text: 'หน้าที่แยกได้' }), el('th', { text: 'สถานะ' }))),
+        el('tbody', {}, rows.length ? rows : el('tr', {}, el('td', { colspan: '3', class: 'empty', text: 'ยังไม่พบพนักงานในไฟล์นี้ — เลือกพนักงานให้แต่ละหน้าด้านล่าง' }))))));
+      if (missing.length) {
+        summaryCard.appendChild(el('p', { class: 'small', style: 'margin:10px 0 0;color:var(--warn)' },
+          'ไม่พบในไฟล์นี้ ' + missing.length + ' คน: ', missing.map(function (e) { return e.name; }).join(', ')));
+      }
+      summaryCard.appendChild(el('div', { class: 'row', style: 'justify-content:flex-end;margin-top:14px' }, resetBtn, goBtn));
+    }
+
+    var thumbs = {};
+    function drawPages() {
+      Core.clear(pagesCard);
+      pagesCard.classList.remove('hidden');
+      pagesCard.appendChild(el('div', { class: 'section-title' },
+        el('h2', { text: 'ตรวจสอบทีละหน้า' }),
+        el('span', { class: 'muted small', text: 'คลิกที่ภาพเพื่อดูขนาดใหญ่ · เปลี่ยนพนักงานได้ที่ช่องเลือก' })));
+      var grid = el('div', { class: 'page-grid' });
+      pagesCard.appendChild(grid);
+      var HOW = {
+        auto: function (p) { return ['ok', 'พบ' + p.auto.by]; },
+        manual: function () { return ['info', 'เลือกเอง']; },
+        inherit: function () { return ['muted', 'ต่อจากหน้าก่อน']; },
+        ambiguous: function (p) { return ['bad', 'พบหลายคน: ' + p.auto.candidates.join(', ')]; },
+        none: function () { return ['bad', 'ไม่พบชื่อ ต้องเลือกเอง']; }
+      };
+      var COLORS = { ok: 'var(--ok)', info: 'var(--info)', muted: 'var(--muted)', bad: 'var(--bad)' };
+      sp.pages.forEach(function (p) {
+        var sel = el('select', { class: 'input', style: 'min-height:34px;padding:4px 8px;font-size:13px' });
+        sel.appendChild(el('option', { value: '', text: '— ยังไม่ระบุ —', selected: !p.assigned }));
+        sel.appendChild(el('option', { value: SKIP, text: '✕ ไม่ใช้หน้านี้', selected: p.assigned === SKIP }));
+        emps.forEach(function (e) { sel.appendChild(el('option', { value: e.employeeId, text: e.employeeId + ' · ' + e.name, selected: p.assigned === e.employeeId })); });
+        sel.addEventListener('change', function () { p.manual = sel.value; drawAll(); });
+        var how = HOW[p.how](p);
+        var thumb = thumbs[p.n] || (thumbs[p.n] = el('div', { class: 'page-thumb' }, el('span', { class: 'spinner' })));
+        thumb.onclick = function () { zoomPage(p.n); };
+        var emp = empById[p.assigned];
+        grid.appendChild(el('div', { class: 'page-card' + (p.assigned ? '' : ' unassigned') },
+          thumb,
+          el('div', { class: 'row', style: 'justify-content:space-between;margin:6px 0 4px' },
+            el('b', { class: 'small', text: 'หน้า ' + p.n }),
+            p.manual !== undefined ? el('button', { class: 'linkbtn small', text: 'ให้ระบบเลือก', onclick: function () { delete p.manual; drawAll(); } }) : null),
+          sel,
+          el('div', { class: 'small', style: 'margin-top:4px;color:' + COLORS[how[0]], text: how[1] + (emp && p.how === 'inherit' ? ' (' + emp.name + ')' : '') })));
+      });
+      renderThumbs();
+    }
+
+    var thumbsBusy = false;
+    function renderThumbs() {
+      if (thumbsBusy) return;
+      thumbsBusy = true;
+      var chain = Promise.resolve();
+      sp.pages.forEach(function (p) {
+        chain = chain.then(function () {
+          var box = thumbs[p.n];
+          if (!box || box.dataset.done) return;
+          return sp.pdf.getPage(p.n).then(function (page) {
+            var base = page.getViewport({ scale: 1 });
+            var vp = page.getViewport({ scale: 300 / base.width });
+            var c = el('canvas');
+            c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+            return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise.then(function () {
+              Core.clear(box).appendChild(c);
+              box.dataset.done = '1';
+            });
+          });
+        });
+      });
+      chain.catch(function () {}).then(function () { thumbsBusy = false; });
+    }
+
+    function zoomPage(n) {
+      var box = el('div', { class: 'viewer', style: 'max-height:80vh' }, Core.loading());
+      Core.modal({ title: 'หน้า ' + n, wide: true, body: box });
+      sp.pdf.getPage(n).then(function (page) {
+        var width = Math.max(320, box.clientWidth - 20);
+        var ratio = Math.min(window.devicePixelRatio || 1, 2);
+        var base = page.getViewport({ scale: 1 });
+        var vp = page.getViewport({ scale: (width / base.width) * ratio });
+        var c = el('canvas');
+        c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+        return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise.then(function () { Core.clear(box).appendChild(c); });
+      });
+    }
+
+    function uploadGroups(groups) {
+      var replacing = groups.filter(function (g) { return current[g.employeeId]; });
+      var ask = replacing.length
+        ? Core.confirmDialog({ title: 'ยืนยันการแทนที่', okText: 'อัปโหลดต่อ', message: 'มี ' + replacing.length + ' คนที่มีใบลงเวลาเดือน ' + Core.periodLabel(state.period) + ' อยู่แล้ว ฉบับเดิมจะถูกแทนที่ และพนักงานต้องยืนยันฉบับใหม่อีกครั้ง ต้องการดำเนินการต่อหรือไม่?' })
+        : Promise.resolve(true);
+      ask.then(function (ok) {
+        if (!ok) return;
+        var period = state.period;
+        var base = sp.fileName.replace(/\.pdf$/i, '');
+        var src = null;
+        var chain = loadScript(PDFLIB_URL).then(function () {
+          return PDFLib.PDFDocument.load(sp.bytes, { ignoreEncryption: true });
+        }).then(function (doc) { src = doc; });
+        groups.forEach(function (g) {
+          chain = chain.then(function () {
+            sp.done[g.employeeId] = 'uploading';
+            drawSummary();
+            return PDFLib.PDFDocument.create().then(function (out) {
+              return out.copyPages(src, g.pages.map(function (n) { return n - 1; })).then(function (copied) {
+                copied.forEach(function (pg) { out.addPage(pg); });
+                return out.save();
+              });
+            }).then(function (bytes) {
+              if (bytes.length > MAX_MB * 1024 * 1024) throw new Error('ไฟล์ที่แยกได้ใหญ่เกิน ' + MAX_MB + ' MB');
+              return Core.api('adm_uploadTimesheet', {
+                employeeId: g.employeeId, period: period, mimeType: 'application/pdf',
+                fileName: base + '_' + g.employeeId + '.pdf', base64: bytesToB64(bytes)
+              });
+            }).then(function (res) {
+              sp.done[g.employeeId] = 'done';
+              current[g.employeeId] = res.timesheet.status;
+            }).catch(function (e) {
+              sp.done[g.employeeId] = { error: Core.errMsg(e) };
+            }).then(drawSummary);
+          });
+        });
+        chain.catch(function (e) { Core.toast(Core.errMsg(e), 'error'); }).then(function () {
+          var okCount = groups.filter(function (g) { return sp.done[g.employeeId] === 'done'; }).length;
+          drawSummary();
+          Core.toast('แยกและอัปโหลดสำเร็จ ' + okCount + '/' + groups.length + ' คน', okCount === groups.length ? 'ok' : 'error');
+          loadDash().catch(function () {});
+        });
+      });
+    }
+
+    if (sp) { Core.clear(summaryCard).appendChild(Core.loading()); summaryCard.classList.remove('hidden'); }
   }
 
   /* ======================= จัดการพนักงาน ======================= */

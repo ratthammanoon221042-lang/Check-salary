@@ -258,4 +258,9 @@
   .kv dd { margin: 0; word-break: break-all; }
   .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
   .empty { text-align: center; padding: 30px 10px; color: var(--muted); }
+  .page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+  .page-card { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--surface-2); }
+  .page-card.unassigned { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+  .page-thumb { background: #fff; border-radius: 6px; min-height: 160px; display: grid; place-items: center; cursor: zoom-in; overflow: hidden; border: 1px solid var(--border); }
+  .page-thumb canvas { display: block; width: 100%; height: auto; }
   .hidden { display: none !important; }
