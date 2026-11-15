@@ -274,8 +274,18 @@ var App = (function () {
 
   function root() { return Core.clear(document.getElementById('app')); }
 
+  // Google ไม่อนุญาตให้ล็อกอินในเบราว์เซอร์ที่อยู่ในแอป (LINE, Facebook ฯลฯ)
+  var UA = navigator.userAgent || '';
+  var IN_LINE = /\bLine\//i.test(UA);
+  var IN_APP = IN_LINE || /FBAN|FBAV|FB_IAB|Instagram|Messenger|TikTok|musical_ly|KAKAOTALK|; wv\)/i.test(UA);
+
   self.start = function () {
     document.title = self.name;
+    // เปิดจาก LINE: ให้ LINE เปิดหน้านี้ในเบราว์เซอร์ปกติ (Chrome / Safari) แทน
+    if (IN_LINE && !/[?&]openExternalBrowser=1/.test(location.search)) {
+      location.replace(location.pathname + (location.search ? location.search + '&' : '?') + 'openExternalBrowser=1' + location.hash);
+      return;
+    }
     if (!Core.apiConfigured() || !Core.googleClientId()) return showNotConfigured();
     var t = Core.store.get(TOKEN_KEY);
     if (!t) return showLogin();
@@ -339,6 +349,11 @@ var App = (function () {
     var card = loginCard();
     var gBox = el('div', { class: 'google-box' }, Core.loading('กำลังโหลด...'));
     var gStatus = el('div', { class: 'hint', style: 'text-align:center' });
+    if (IN_APP) {
+      card.body.appendChild(el('div', { class: 'callout callout-warn', style: 'margin-bottom:14px' },
+        el('b', { text: 'กรุณาเปิดลิงก์นี้ใน Chrome หรือ Safari' }), el('br'),
+        'Google ไม่อนุญาตให้ล็อกอินจากในแอป LINE / Facebook — กดปุ่ม ⋮ หรือ ⋯ มุมขวาบน แล้วเลือก "เปิดในเบราว์เซอร์" (Open in browser)'));
+    }
     card.body.appendChild(el('div', { class: 'stack' }, gBox, gStatus));
 
     function onCredential(resp) {
