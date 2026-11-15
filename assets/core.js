@@ -323,7 +323,8 @@ var App = (function () {
       el('div', { class: 'card login-card' },
         el('div', { class: 'brand' }, el('span', { class: 'brand-mark', text: '✓' }), self.name),
         el('p', { class: 'muted', style: 'text-align:center;margin:0 0 18px', text: 'ตรวจสอบและยืนยันใบลงเวลาของคุณ' }),
-        body, errBox)));
+        body, errBox,
+        el('div', { style: 'text-align:center;margin-top:18px' }, el('a', { class: 'small muted', href: 'privacy.html', text: 'นโยบายความเป็นส่วนตัว' })))));
     return { body: body, err: errBox };
   }
 
