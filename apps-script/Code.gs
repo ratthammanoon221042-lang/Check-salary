@@ -10,6 +10,25 @@
  *  ข้อมูลเก็บใน Google Sheet และไฟล์ใบลงเวลาเก็บใน Google Drive ของคุณ
  */
 
+/**
+ * ▶ ฟังก์ชันที่ต้องกด Run มีแค่ฟังก์ชันนี้ (setup) — อยู่บนสุดเพื่อให้ถูกเลือกไว้เป็นค่าเริ่มต้น
+ * รันฟังก์ชันนี้ 1 ครั้งจาก Apps Script Editor (เลือก setup แล้วกด Run)
+ * เพื่ออนุญาตสิทธิ์ และสร้างชีต + โฟลเดอร์ Drive
+ */
+function setup() {
+  ensureAllSheets_();
+  const ss = getSpreadsheet_();
+  try { ss.setSpreadsheetTimeZone(TZ); } catch (e) { /* ไม่เป็นไร */ }
+  const folder = getRootFolder_();
+  console.log('ตั้งค่าเสร็จแล้ว');
+  console.log('ฐานข้อมูล Google Sheet: ' + ss.getUrl());
+  console.log('โฟลเดอร์เก็บไฟล์: ' + folder.getUrl());
+  console.log('อีเมลผู้ดูแลระบบ: ' + adminEmail_());
+  console.log('GOOGLE_CLIENT_ID: ' + (googleClientId_() || 'ยังไม่ได้ตั้งค่า — ต้องตั้งก่อนใช้งาน ดู README'));
+  // เรียกครั้งเดียวเพื่อให้ Google ขอสิทธิ์เชื่อมต่อภายนอก (ใช้ตรวจการล็อกอินด้วย Google)
+  UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo', { muteHttpExceptions: true });
+}
+
 
 /* ============================================================
  * ค่าตั้งต้น
@@ -371,6 +390,7 @@ function googleClientId_() {
 
 /** หน้าเว็บเรียก: ล็อกอินด้วยบัญชี Google (ส่ง ID token ที่ได้จากปุ่ม Sign in with Google มา) */
 function googleLogin(idToken) {
+  if (idToken === undefined) throw new Error('ฟังก์ชันนี้หน้าเว็บเป็นคนเรียกเอง ไม่ต้องกด Run — ถ้าจะตั้งค่า ให้เลือกฟังก์ชัน setup ที่ช่องด้านบนแล้วกด Run');
   const clientId = googleClientId_();
   if (!clientId) throw new Error('ผู้ดูแลยังไม่ได้ตั้งค่า GOOGLE_CLIENT_ID ใน Apps Script (Project Settings → Script Properties)');
   idToken = String(idToken || '');
@@ -988,22 +1008,4 @@ function doPost(e) {
 /** เปิด URL ของ Web app ในเบราว์เซอร์เพื่อเช็กว่า API พร้อมใช้งาน */
 function doGet() {
   return jsonOut_({ ok: true, app: APP_NAME, message: 'API พร้อมใช้งาน — นำ URL นี้ไปใส่ใน config.js บน GitHub' });
-}
-
-/**
- * รันฟังก์ชันนี้ 1 ครั้งจาก Apps Script Editor (เลือก setup แล้วกด Run)
- * เพื่ออนุญาตสิทธิ์ และสร้างชีต + โฟลเดอร์ Drive
- */
-function setup() {
-  ensureAllSheets_();
-  const ss = getSpreadsheet_();
-  try { ss.setSpreadsheetTimeZone(TZ); } catch (e) { /* ไม่เป็นไร */ }
-  const folder = getRootFolder_();
-  console.log('ตั้งค่าเสร็จแล้ว');
-  console.log('ฐานข้อมูล Google Sheet: ' + ss.getUrl());
-  console.log('โฟลเดอร์เก็บไฟล์: ' + folder.getUrl());
-  console.log('อีเมลผู้ดูแลระบบ: ' + adminEmail_());
-  console.log('GOOGLE_CLIENT_ID: ' + (googleClientId_() || 'ยังไม่ได้ตั้งค่า — ต้องตั้งก่อนใช้งาน ดู README'));
-  // เรียกครั้งเดียวเพื่อให้ Google ขอสิทธิ์เชื่อมต่อภายนอก (ใช้ตรวจการล็อกอินด้วย Google)
-  UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo', { muteHttpExceptions: true });
 }
