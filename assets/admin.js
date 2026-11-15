@@ -265,7 +265,7 @@ var AdminApp = (function () {
             el('td', { class: 'small muted', text: a.email }));
         })))) : el('div', { class: 'muted small', text: 'ยังไม่มีกิจกรรม' }));
 
-    body.appendChild(el('div', { class: 'grid-2' },
+    body.appendChild(el('div', { class: 'grid-2 wide-left' },
       el('div', {},
         el('div', { class: 'section-title' }, el('h3', { style: 'margin:0', text: 'ไฟล์' }), el('div', { class: 'spacer' }), dl),
         viewer),

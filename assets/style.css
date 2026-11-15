@@ -106,8 +106,10 @@
   .small { font-size: 13px; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .stack > * + * { margin-top: 10px; }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
+  .grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .grid-2 > * { min-width: 0; }
+  .grid-2.wide-left { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+  @media (max-width: 860px) { .grid-2, .grid-2.wide-left { grid-template-columns: minmax(0, 1fr); } }
 
   /* ---------- controls ---------- */
   .btn {
@@ -199,7 +201,7 @@
   .zoom-label { min-width: 64px; text-align: center; font-size: 13px; font-weight: 600; color: var(--muted); }
   .viewer-empty { display: grid; place-items: center; min-height: 220px; color: var(--muted); text-align: center; }
 
-  .callout { border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+  .callout { border-radius: 10px; padding: 12px 14px; font-size: 14px; overflow-wrap: anywhere; }
   .callout-ok { background: var(--ok-soft); color: var(--ok); }
   .callout-warn { background: var(--warn-soft); color: var(--warn); }
   .callout-bad { background: var(--bad-soft); color: var(--bad); }
